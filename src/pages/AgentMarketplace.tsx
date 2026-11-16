@@ -104,6 +104,7 @@ export function AgentMarketplace() {
             <a href="/credits" className="hover:text-white">Créditos</a>
             <a href="/mcp" className="hover:text-white">Integração</a>
             <a href="/ecosystem" className="hover:text-white">Ecossistema</a>
+            <a href="/conectar-carteira" className="font-semibold text-cyan-300 hover:text-cyan-100">Conectar carteira</a>
           </nav>
         </div>
       </header>

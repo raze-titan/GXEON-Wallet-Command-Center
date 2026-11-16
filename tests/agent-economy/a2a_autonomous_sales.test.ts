@@ -28,6 +28,7 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
     resetAgentEconomyStoreForTesting();
     process.env.GXEON_X402_ALLOW_TEST_PROOFS = 'true';
     process.env.GXEON_X402_BASE_PAYTO = TEST_OPERATOR_ADDRESS;
+    process.env.GXEON_TREASURY_CHALLENGE_SECRET = 'ab'.repeat(32);
     process.env.GXEON_TREASURY_VERIFIED = 'true';
     process.env.GXEON_AUTONOMOUS_SELLING_ENABLED = 'true';
   });

@@ -8,7 +8,6 @@ import {
   Cpu,
   ArrowRight,
   ExternalLink,
-  Lock,
 } from 'lucide-react';
 import { WalletItem } from '../../types';
 import { Badge } from '../../components/common/Badge';
@@ -179,28 +178,27 @@ export const UnifiedConnectModal: React.FC<UnifiedConnectModalProps> = ({
               </div>
 
               {/* 3. Coinbase Wallet */}
-              <div
-                aria-disabled="true"
-                className="p-4 rounded-xl bg-[#111C30] border border-[#1E314F] opacity-60 cursor-not-allowed flex items-center justify-between group"
+              <a
+                href="/conectar-carteira"
+                className="p-4 rounded-xl bg-[#111C30] hover:bg-[#152238] border border-[#1E314F] hover:border-[#00D4FF]/50 transition-all flex items-center justify-between group"
               >
                 <div className="flex items-start gap-3.5">
                   <div className="p-2.5 rounded-lg bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/20 mt-0.5">
-                    <Lock className="w-5 h-5" />
+                    <Wallet className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-mono font-bold text-sm text-white group-hover:text-[#00D4FF] transition-colors">
-                        Coinbase Wallet Extension
+                        Base / Coinbase Wallet
                       </span>
-                      <Badge variant="slate">COMING SOON</Badge>
                     </div>
                     <p className="text-xs text-slate-400 font-mono mt-1 leading-relaxed">
-                      Connector remains disabled until the authorization handshake is implemented.
+                      Verify the GXEON USDC receiving wallet on Base.
                     </p>
                   </div>
                 </div>
                 <ArrowRight className="w-5 h-5 text-slate-500 group-hover:text-[#00D4FF] group-hover:translate-x-1 transition-all shrink-0 ml-2" />
-              </div>
+              </a>
 
               {/* 4. Add Watch-Only Address */}
               <div

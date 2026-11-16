@@ -2,8 +2,10 @@ import { listAvailableServices } from '../../src/agent-economy/services/registry
 import { getFeatureFlags } from '../../src/agent-economy/featureFlags.js';
 import {
   generateTreasuryChallenge,
+  getTreasuryVerificationConfig,
   verifyTreasurySignature,
 } from '../../src/agent-economy/x402/treasuryVerifier.js';
+import { getAgentEconomyStore } from '../../src/agent-economy/store.js';
 import { checkBazaarVisibility } from '../../src/agent-economy/connectors/x402BazaarConnector.js';
 import { getTreasuryStatus } from '../../src/agent-economy/x402/networks.js';
 import { sendJson, sendError, parseBody } from './_helper.js';
@@ -15,12 +17,13 @@ export default async function handler(req: any, res: any) {
 
   // POST /v1/treasury/verify or ?view=treasury-verify
   if (path.endsWith('/treasury/verify') || view === 'treasury-verify') {
+    res.setHeader('Cache-Control', 'no-store');
     if (req.method !== 'POST') {
       sendError(res, 405, 'INVALID_INPUT', 'Method Not Allowed. Use POST.');
       return;
     }
     const body = await parseBody(req);
-    if (!body || !body.address || !body.challenge || !body.signature) {
+    if (typeof body?.address !== 'string' || typeof body.challenge !== 'string' || typeof body.signature !== 'string') {
       sendError(
         res,
         400,
@@ -34,15 +37,16 @@ export default async function handler(req: any, res: any) {
       address: body.address,
       challenge: body.challenge,
       signature: body.signature,
+      walletProvider: body.walletProvider === 'metamask' || body.walletProvider === 'coinbase_wallet'
+        ? body.walletProvider : 'browser_wallet',
     });
 
     if (!verification.verified) {
       sendError(
         res,
-        400,
-        'TREASURY_UNVERIFIED' as any,
-        verification.error || 'Treasury signature verification failed',
-        { recoveredAddress: verification.recoveredAddress }
+        verification.unavailable ? 503 : 400,
+        verification.unavailable ? 'SERVICE_UNAVAILABLE' : 'TREASURY_UNVERIFIED',
+        verification.error || 'Treasury signature verification failed'
       );
       return;
     }
@@ -50,7 +54,8 @@ export default async function handler(req: any, res: any) {
     sendJson(res, 200, {
       verified: true,
       recoveredAddress: verification.recoveredAddress,
-      record: verification.record,
+      verifiedAt: verification.record?.verified_at,
+      chainId: verification.record?.chain_id,
       instructions:
         'Treasury ownership successfully verified and persisted. Set GXEON_X402_BASE_PAYTO to this address and GXEON_TREASURY_VERIFIED=true in your environment to enable live x402 sales.',
     });
@@ -62,8 +67,34 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
+  // GET /v1/treasury/status
+  if (path.endsWith('/treasury/status') || view === 'treasury-status') {
+    res.setHeader('Cache-Control', 'no-store');
+    const config = getTreasuryVerificationConfig();
+    if (!config) {
+      sendJson(res, 200, { configured: false, walletVerified: false, x402Enabled: false });
+      return;
+    }
+    try {
+      const record = await getAgentEconomyStore().getTreasuryVerification(config.address);
+      const walletVerified = record?.chain_id === 8453 &&
+        record.treasury_address.toLowerCase() === config.address.toLowerCase();
+      sendJson(res, 200, {
+        configured: true,
+        walletVerified,
+        verifiedAt: walletVerified ? record.verified_at : null,
+        x402Enabled: process.env.GXEON_AUTONOMOUS_SELLING_ENABLED === 'true' &&
+          getTreasuryStatus().status === 'TREASURY_VERIFIED',
+      });
+    } catch {
+      sendError(res, 503, 'SERVICE_UNAVAILABLE', 'O registro de verificação está indisponível. Tente novamente.');
+    }
+    return;
+  }
+
   // GET /v1/treasury/challenge or ?view=treasury-challenge
   if (path.endsWith('/treasury/challenge') || view === 'treasury-challenge') {
+    res.setHeader('Cache-Control', 'no-store');
     const address =
       url.searchParams.get('address') || process.env.GXEON_X402_BASE_PAYTO || '';
     if (!address) {
@@ -76,6 +107,11 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
+    if (!getTreasuryVerificationConfig()) {
+      sendError(res, 503, 'SERVICE_UNAVAILABLE', 'A verificação da carteira ainda está indisponível.');
+      return;
+    }
+
     try {
       const challengeData = generateTreasuryChallenge(address);
       sendJson(res, 200, {
@@ -85,7 +121,7 @@ export default async function handler(req: any, res: any) {
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      sendError(res, 400, 'SECURITY_VIOLATION' as any, msg);
+      sendError(res, 400, 'INVALID_INPUT', msg);
     }
     return;
   }

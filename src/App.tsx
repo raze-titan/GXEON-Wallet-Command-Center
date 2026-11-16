@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { User } from 'firebase/auth';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar, NavTab } from './components/layout/Sidebar';
@@ -44,6 +44,8 @@ import { bountyService } from './services/bountyService';
 import { payoutVerifier } from './services/payoutVerifier';
 import { transactionService } from './services/transactionService';
 import { auditService } from './services/auditService';
+
+const TreasuryConnect = lazy(() => import('./pages/TreasuryConnect'));
 
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -284,6 +286,13 @@ export function App() {
   }
   if (currentPath === '/market') {
     return <AgentMarketplace />;
+  }
+  if (currentPath === '/conectar-carteira') {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#070D18] p-8 text-slate-300" role="status">Carregando conexão da carteira…</div>}>
+        <TreasuryConnect />
+      </Suspense>
+    );
   }
   if (currentPath === '/guides/bottube-api') {
     return <BoTTubeIntegrationGuide />;

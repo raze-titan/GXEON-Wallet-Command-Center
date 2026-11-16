@@ -67,6 +67,10 @@
       "destination": "/api/v1/services?view=treasury-verify"
     },
     {
+      "source": "/v1/treasury/status",
+      "destination": "/api/v1/services?view=treasury-status"
+    },
+    {
       "source": "/v1/bazaar/discovery",
       "destination": "/api/v1/services?view=bazaar-discovery"
     },

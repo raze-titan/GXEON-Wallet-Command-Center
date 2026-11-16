@@ -109,24 +109,22 @@ export const ConnectWalletModal: React.FC<ConnectWalletModalProps> = ({
           </button>
 
           {/* Coinbase Wallet */}
-          <div className="w-full p-3.5 rounded-lg bg-[#0B1220]/50 border border-[#1E314F] flex items-center justify-between opacity-80">
+          <a href="/conectar-carteira" className="w-full p-3.5 rounded-lg bg-[#0B1220]/50 border border-[#1E314F] hover:border-[#00D4FF]/50 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded bg-[#152238] flex items-center justify-center font-mono font-bold text-[#00D4FF] text-xs">
                 🔵
               </div>
               <div className="text-left">
                 <div className="text-sm font-bold font-mono text-white">
-                  Coinbase Wallet
+                  Base / Coinbase Wallet
                 </div>
                 <div className="text-[11px] text-slate-400 font-mono">
-                  Self-Custodial Wallet Connector
+                  Verify the USDC receiving wallet on Base
                 </div>
               </div>
             </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
-              READY
-            </span>
-          </div>
+            <span className="text-xs font-mono text-[#00D4FF]">Connect →</span>
+          </a>
 
           {/* Solana */}
           <div className="w-full p-3.5 rounded-lg bg-[#0B1220]/30 border border-[#1E314F] flex items-center justify-between opacity-60">
