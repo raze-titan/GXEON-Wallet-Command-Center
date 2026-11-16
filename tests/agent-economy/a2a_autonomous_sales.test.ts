@@ -30,7 +30,7 @@ const nonce = ('0x' + 'c1'.repeat(32)) as Hex;
 const authEvent = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
 
-function mockSettlement(options: { status?: 'pending' | 'confirmed' | 'unmatched'; lostResponse?: boolean } = {}) {
+function mockSettlement(options: { status?: 'pending' | 'unfinalized' | 'confirmed' | 'unmatched'; lostResponse?: boolean } = {}) {
   let status = options.status ?? 'confirmed';
   const log = { address: asset, transactionHash: txHash, blockHash: txHash, blockNumber: '0x11', transactionIndex: '0x0', removed: false };
   const authorizationLog = {
@@ -55,11 +55,16 @@ function mockSettlement(options: { status?: 'pending' | 'confirmed' | 'unmatched
     const rpcResult: Record<string, unknown> = {
       eth_chainId: '0x2105',
       eth_blockNumber: '0x11',
+      eth_getBlockByNumber: {
+        number: body.params?.[0] === 'finalized' && status === 'unfinalized' ? '0x10' : '0x11',
+        hash: txHash,
+        transactions: [],
+      },
       eth_getLogs: status === 'pending' ? [] : [authorizationLog],
       eth_getTransactionReceipt: status === 'pending' ? null : {
         ...log, status: '0x1', type: '0x2', from: buyer, to: asset,
         cumulativeGasUsed: '0x1', gasUsed: '0x1', effectiveGasPrice: '0x1',
-        logs: status === 'confirmed' ? [authorizationLog, transferLog] : [authorizationLog],
+        logs: status === 'unmatched' ? [authorizationLog] : [authorizationLog, transferLog],
       },
     };
     expect(body.method in rpcResult).toBe(true);
@@ -421,6 +426,29 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
       expect(paid.statusCode).toBe(200);
       expect(paid.body).toMatchObject({ result: { qualityPass: true }, receipt: { txHash, amountUsdc: '0.010000' } });
       expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(1);
+    });
+
+    it('waits for finality even when the Base receipt already contains the matching transfer', async () => {
+      const { confirm, fetch } = mockSettlement({ status: 'unfinalized' });
+      const original = await paidRequest();
+
+      const pending = await handleX402CapabilityExecution(original);
+      expect(pending.statusCode).toBe(503);
+      expect(pending.headers['Retry-After']).toBe('30');
+      expect(await getAgentEconomyStore().listMachineRevenue()).toHaveLength(0);
+
+      confirm();
+      const result = await handleX402CapabilityExecution(original);
+      expect(result.statusCode).toBe(200);
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(1);
+      expect(await getAgentEconomyStore().listMachineRevenue()).toMatchObject([{ txHash, status: 'SETTLED' }]);
+    });
+
+    it('does not credit the authorization when the facilitator returns a hash without a Base receipt', async () => {
+      mockSettlement({ status: 'pending' });
+      const result = await handleX402CapabilityExecution(await paidRequest());
+      expect(result.statusCode).toBe(503);
+      expect(await getAgentEconomyStore().listMachineRevenue()).toHaveLength(0);
     });
 
     it('requires a matching USDC transfer even after facilitator success', async () => {

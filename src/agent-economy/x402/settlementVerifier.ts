@@ -167,5 +167,12 @@ export async function verifyX402Settlement(
     return { kind: 'invalid', message: 'The Base receipt does not prove this exact USDC payment.' };
   }
 
+  const finalized = await client.getBlock({ blockTag: 'finalized' });
+  if (finalized.number === null || finalized.number < receipt.blockNumber) return { kind: 'pending' };
+  const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
+  if (canonical.hash === null || canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+    return { kind: 'pending' };
+  }
+
   return { kind: 'confirmed', proof: { settlementId, txHash, blockNumber: Number(receipt.blockNumber) } };
 }

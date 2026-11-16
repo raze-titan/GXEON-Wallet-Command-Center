@@ -117,7 +117,7 @@ export async function handleX402CapabilityExecution(options: {
   const requestHash = createHash('sha256').update(JSON.stringify([serviceId, inputHash, payment])).digest('hex');
   const paymentResult = await verifyX402Settlement(payment, readiness.facilitator, requestHash);
   if (paymentResult.kind === 'pending') {
-    return response(503, { error: 'SETTLEMENT_PENDING', message: 'Retry the same request and payment signature.' }, { 'Retry-After': '5' });
+    return response(503, { error: 'SETTLEMENT_PENDING', message: 'Wait for Base finality, then retry the same request and payment signature.' }, { 'Retry-After': '30' });
   }
   if (paymentResult.kind === 'conflict') {
     await store.recordSecurityEvent('replaysBlocked');

@@ -93,6 +93,6 @@ Production purchase/execution currently has two active BRL rails:
 - Stripe LIVE direct service checkout.
 - Stripe LIVE prepaid credit packs from BRL 0.99.
 
-The live x402 status is available at `GET /v1/payment-methods`. When enabled, the Base USDC pilot serves `POST /x402/json-validate` and `POST /x402/csv-audit` for 0.01 USDC per call, paid to the verified treasury. The receiving wallet stays non-custodial. PayAI verifies and submits the buyer's signed x402 payment, and GXEON checks the Base transaction receipt before it records delivery and revenue together.
+The live x402 status is available at `GET /v1/payment-methods`. When enabled, the Base USDC pilot serves `POST /x402/json-validate` and `POST /x402/csv-audit` for 0.01 USDC per call, paid to the verified treasury. The receiving wallet stays non-custodial. PayAI verifies and submits the buyer's signed x402 payment, and GXEON checks the finalized Base transaction before it records delivery and revenue together.
 
-Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry the same input with the buyer's x402 v2 `PAYMENT-SIGNATURE` header. If the API reports `SETTLEMENT_PENDING`, reuse the same input and signature until the receipt becomes available. A successful response includes the result and the confirmed Base transaction hash. A raw transaction hash is insufficient to claim a task.
+Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry the same input with the buyer's x402 v2 `PAYMENT-SIGNATURE` header. If the API reports `SETTLEMENT_PENDING`, follow `Retry-After` and reuse the same input and signature while the transaction finalizes. A successful response includes the result and the finalized Base transaction hash.
