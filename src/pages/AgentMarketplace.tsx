@@ -30,6 +30,14 @@ type ServiceResponse = {
   services?: Service[];
 };
 
+type X402Offer = {
+  serviceId: string;
+  paymentRail: string;
+  status: string;
+  unitPriceUsdc: number;
+  endpoint?: string;
+};
+
 const MARKET_MCP =
   'https://gxeon-wallet-command-center.vercel.app/api/v1/mcp?view=public-market';
 const OFFICIAL_MCP_REGISTRY =
@@ -45,6 +53,7 @@ function brl(cents: number) {
 export function AgentMarketplace() {
   const [packs, setPacks] = useState<Pack[]>([]);
   const [services, setServices] = useState<Service[]>([]);
+  const [x402Offers, setX402Offers] = useState<X402Offer[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -72,6 +81,14 @@ export function AgentMarketplace() {
     }
 
     void load();
+    void fetch('/v1/offers', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then((data: { canonicalOffers?: X402Offer[] } | null) => {
+        if (cancelled || !Array.isArray(data?.canonicalOffers)) return;
+        setX402Offers(data.canonicalOffers.filter(offer => offer.paymentRail === 'x402' &&
+          offer.status === 'ACTIVE' && typeof offer.unitPriceUsdc === 'number' && offer.endpoint?.startsWith('/x402/')));
+      })
+      .catch(() => { /* Prepaid catalog remains independently available. */ });
     return () => {
       cancelled = true;
     };
@@ -237,6 +254,23 @@ export function AgentMarketplace() {
               {loading ? 'Carregando…' : activeServices.length + ' ativas'}
             </span>
           </div>
+
+          {x402Offers.length > 0 && (
+            <div className="mb-5 rounded-2xl border border-cyan-400/25 bg-[#0C1928] px-5 py-4">
+              <h3 className="font-semibold text-cyan-200">Pagamento por chamada em USDC na Base</h3>
+              <ul className="mt-2 space-y-2 text-sm text-slate-300">
+                {x402Offers.map(offer => (
+                  <li className="flex flex-wrap items-baseline gap-x-3" key={offer.serviceId}>
+                    <code className="text-cyan-100">POST {offer.endpoint}</code>
+                    <span>{offer.unitPriceUsdc.toLocaleString('pt-BR')} USDC por execução</span>
+                  </li>
+                ))}
+              </ul>
+              <a href="/v1/payment-methods" className="mt-3 inline-block text-sm font-medium text-cyan-300 hover:text-cyan-100">
+                Ver rotas para agentes x402
+              </a>
+            </div>
+          )}
 
           <div className="grid md:grid-cols-2 gap-5">
             {activeServices.map((service) => (

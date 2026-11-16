@@ -17,12 +17,23 @@ export const X402_PRICING: Record<string, X402CapabilityPricing> = {
     unitPriceUsdc: 0.01,
     unit: 'payload',
   },
+  gxeon_csv_audit_v1: {
+    serviceId: 'gxeon_csv_audit_v1',
+    unitPriceAtomic: 10000,
+    unitPriceUsdc: 0.01,
+    unit: 'file',
+  },
   gxeon_url_verify_v1: {
     serviceId: 'gxeon_url_verify_v1',
-    unitPriceAtomic: 25000, // 0.025 USDC
+    unitPriceAtomic: 25000,
     unitPriceUsdc: 0.025,
     unit: 'url',
   },
+};
+
+export const X402_SERVICE_PATHS: Readonly<Record<string, string>> = {
+  gxeon_json_validate_v1: '/x402/json-validate',
+  gxeon_csv_audit_v1: '/x402/csv-audit',
 };
 
 export function getX402Price(

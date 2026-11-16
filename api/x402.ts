@@ -1,54 +1,35 @@
 import { handleX402CapabilityExecution } from '../src/agent-economy/x402/middleware.js';
-import { parseBody } from './v1/_helper.js';
+import { X402_SERVICE_PATHS } from '../src/agent-economy/x402/pricing.js';
+import { parseBody, sendJson } from './v1/_helper.js';
+
+const ORIGIN = 'https://gxeon-wallet-command-center.vercel.app';
 
 export default async function handler(req: any, res: any) {
+  res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') {
-    res.statusCode = 405;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Method Not Allowed. x402 endpoints require POST.' }));
+    res.setHeader('Allow', 'POST');
+    sendJson(res, 405, { error: 'Method Not Allowed. x402 endpoints require POST.' });
     return;
   }
 
-  const url = new URL(req.url, 'http://localhost');
-  const path = (url.searchParams.get('path') || url.pathname).toLowerCase();
-
-  let serviceId: string;
-  if (path.includes('url-verify')) {
-    serviceId = 'gxeon_url_verify_v1';
-  } else if (path.includes('json-validate')) {
-    serviceId = 'gxeon_json_validate_v1';
-  } else {
-    res.statusCode = 404;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(
-      JSON.stringify({
-        error: 'ENDPOINT_NOT_FOUND',
-        availableEndpoints: ['/x402/url-verify', '/x402/json-validate'],
-      })
-    );
+  const url = new URL(req.url, ORIGIN);
+  const suffix = url.searchParams.get('path');
+  const path = suffix ? '/x402/' + suffix : url.pathname;
+  const service = Object.entries(X402_SERVICE_PATHS).find(([, route]) => route === path);
+  if (!service) {
+    sendJson(res, 404, { error: 'ENDPOINT_NOT_FOUND', availableEndpoints: Object.values(X402_SERVICE_PATHS) });
     return;
   }
-
-  const body = (await parseBody(req)) || {};
-  const resourceUrl = `https://gxeon-wallet-command-center.vercel.app${path}`;
 
   try {
     const result = await handleX402CapabilityExecution({
-      serviceId,
-      input: body,
+      serviceId: service[0],
+      input: await parseBody(req),
       headers: req.headers,
-      resourceUrl,
+      resourceUrl: ORIGIN + path,
     });
-
-    res.statusCode = result.statusCode;
-    for (const [k, v] of Object.entries(result.headers)) {
-      res.setHeader(k, v);
-    }
-    res.end(JSON.stringify(result.body));
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'INTERNAL_ERROR', message: msg }));
+    sendJson(res, result.statusCode, result.body, result.headers);
+  } catch {
+    sendJson(res, 503, { error: 'PAYMENT_OR_DELIVERY_UNAVAILABLE', message: 'Retry the original request.' }, { 'Retry-After': '5' });
   }
 }

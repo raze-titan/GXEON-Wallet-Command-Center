@@ -203,7 +203,7 @@
           {
             "name": "PAYMENT-SIGNATURE",
             "in": "header",
-            "description": "Base Mainnet USDC transaction hash or x402 payment proof",
+            "description": "Base64-encoded x402 v2 payment payload for the exact quoted Base USDC transfer.",
             "schema": {
               "type": "string"
             }
@@ -216,15 +216,28 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "payload": {
+                    "description": "A parsed JSON value or a string containing JSON to validate."
+                  },
                   "rawJson": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Legacy field for JSON text."
                   },
                   "schema": {
                     "type": "object"
                   }
                 },
-                "required": [
-                  "rawJson"
+                "anyOf": [
+                  {
+                    "required": [
+                      "payload"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rawJson"
+                    ]
+                  }
                 ]
               }
             }
@@ -232,7 +245,7 @@
         },
         "responses": {
           "200": {
-            "description": "Execution successful with cryptographic receipt",
+            "description": "Completed task with a confirmed Base transaction and a GXEON receipt.",
             "headers": {
               "PAYMENT-RESPONSE": {
                 "schema": {
@@ -274,7 +287,7 @@
             }
           },
           "409": {
-            "description": "Replay Blocked - Transaction hash already consumed",
+            "description": "Payment authorization is already bound to a different request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -284,7 +297,7 @@
             }
           },
           "503": {
-            "description": "Treasury not configured or autonomous selling suspended",
+            "description": "Rail paused, settlement pending, or delivery temporarily unavailable. Retry the original request and payment signature.",
             "content": {
               "application/json": {
                 "schema": {
@@ -296,14 +309,14 @@
         }
       }
     },
-    "/x402/url-verify": {
+    "/x402/csv-audit": {
       "post": {
-        "summary": "Verify URL health, TLS certificate, and status code with x402 payment rail",
+        "summary": "Audit CSV structure and data quality with x402 payment",
         "parameters": [
           {
             "name": "PAYMENT-SIGNATURE",
             "in": "header",
-            "description": "Base Mainnet USDC transaction hash or x402 payment proof",
+            "description": "Base64-encoded x402 v2 payment payload for the exact quoted Base USDC transfer.",
             "schema": {
               "type": "string"
             }
@@ -316,15 +329,25 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "urls": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
+                  "csv": {
+                    "type": "string",
+                    "maxLength": 512000
+                  },
+                  "delimiter": {
+                    "type": "string",
+                    "enum": [
+                      ",",
+                      ";",
+                      "\t",
+                      "|"
+                    ]
+                  },
+                  "hasHeader": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
-                  "urls"
+                  "csv"
                 ]
               }
             }
@@ -332,7 +355,21 @@
         },
         "responses": {
           "200": {
-            "description": "Execution successful with cryptographic receipt",
+            "description": "Completed task with a confirmed Base transaction and a GXEON receipt.",
+            "headers": {
+              "PAYMENT-RESPONSE": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Canonical x402 V2 receipt payload"
+              },
+              "X-402-Receipt": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Receipt ID"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -342,11 +379,39 @@
             }
           },
           "402": {
-            "description": "Payment Required - challenge returned",
+            "description": "Payment Required - challenge returned with Base USDC payment instructions",
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Canonical x402 V2 challenge requirements"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/X402Challenge"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Payment authorization is already bound to a different request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Rail paused, settlement pending, or delivery temporarily unavailable. Retry the original request and payment signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -723,11 +788,23 @@
           "title": {
             "type": "string"
           },
-          "description": {
-            "type": "string"
-          },
           "resource": {
-            "type": "string"
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "description": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ]
           },
           "serviceId": {
             "type": "string"
@@ -758,10 +835,13 @@
                 },
                 "maxTimeoutSeconds": {
                   "type": "integer",
-                  "example": 300
+                  "example": 60
                 }
               }
             }
+          },
+          "error": {
+            "type": "string"
           }
         }
       },

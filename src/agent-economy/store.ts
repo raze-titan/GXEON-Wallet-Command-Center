@@ -12,6 +12,7 @@ import {
   OutboxJob,
 } from './types.js';
 import {
+  X402PaymentIntent,
   X402SettlementRecord,
   X402Receipt,
   MachineRevenueRecord,
@@ -39,6 +40,27 @@ export interface CreditPurchase {
   amountCents: number;
   currency: 'brl';
   livemode: boolean;
+}
+
+interface X402Delivery {
+  settlement: X402SettlementRecord;
+  receipt: X402Receipt;
+  revenue: MachineRevenueRecord;
+  job: Job;
+  result: JobResult;
+}
+
+function nextMachineCustomer(revenue: MachineRevenueRecord, existing?: MachineCustomerRecord) {
+  const { buyer, serviceId, amountUsdc, verifiedAt } = revenue;
+  return {
+    machineCustomerId: existing?.machineCustomerId ?? `cust_${buyer.slice(-8)}`,
+    payerAddress: buyer,
+    firstPurchaseAt: existing?.firstPurchaseAt ?? verifiedAt,
+    lastPurchaseAt: verifiedAt,
+    jobsPurchased: (existing?.jobsPurchased ?? 0) + 1,
+    totalUsdcPaid: (existing?.totalUsdcPaid ?? 0) + amountUsdc,
+    servicesUsed: [...new Set([...(existing?.servicesUsed ?? []), serviceId])],
+  };
 }
 
 function purchaseEntry(purchase: CreditPurchase, account: AgentAccount): LedgerEntry {
@@ -111,6 +133,10 @@ export interface IAgentEconomyStore {
   ): Promise<{ claimed: boolean; record: X402SettlementRecord }>;
   updateX402Settlement(txHash: string, updates: Partial<X402SettlementRecord>): Promise<void>;
   getX402Settlement(txHash: string): Promise<X402SettlementRecord | null>;
+  getX402PaymentIntent(id: string): Promise<X402PaymentIntent | null>;
+  reserveX402PaymentIntent(intent: X402PaymentIntent): Promise<{ created: boolean; record: X402PaymentIntent }>;
+  setX402PaymentTransaction(id: string, txHash: string): Promise<void>;
+  commitX402Delivery(delivery: X402Delivery): Promise<boolean>;
   saveX402Receipt(receipt: X402Receipt): Promise<void>;
   getX402Receipt(receiptId: string): Promise<X402Receipt | null>;
   saveMachineRevenue(revenue: MachineRevenueRecord): Promise<void>;
@@ -149,6 +175,7 @@ export class MemoryAgentEconomyStore implements IAgentEconomyStore {
   private outbox = new Map<string, OutboxJob>();
   private workers = new Map<string, WorkerDefinition>();
   private x402Settlements = new Map<string, X402SettlementRecord>();
+  private x402PaymentIntents = new Map<string, X402PaymentIntent>();
   private x402Receipts = new Map<string, X402Receipt>();
   private machineRevenue = new Map<string, MachineRevenueRecord>();
   private machineCustomers = new Map<string, MachineCustomerRecord>();
@@ -416,6 +443,36 @@ export class MemoryAgentEconomyStore implements IAgentEconomyStore {
 
   async getX402Settlement(txHash: string): Promise<X402SettlementRecord | null> {
     return this.x402Settlements.get(txHash.toLowerCase()) || null;
+  }
+
+  async getX402PaymentIntent(id: string): Promise<X402PaymentIntent | null> {
+    return this.x402PaymentIntents.get(id) ?? null;
+  }
+
+  async reserveX402PaymentIntent(intent: X402PaymentIntent) {
+    const existing = this.x402PaymentIntents.get(intent.id);
+    if (existing) return { created: false, record: existing };
+    this.x402PaymentIntents.set(intent.id, intent);
+    return { created: true, record: intent };
+  }
+
+  async setX402PaymentTransaction(id: string, txHash: string): Promise<void> {
+    const existing = this.x402PaymentIntents.get(id);
+    if (!existing) throw new Error('Missing x402 payment intent');
+    this.x402PaymentIntents.set(id, { ...existing, txHash });
+  }
+
+  async commitX402Delivery({ settlement, receipt, revenue, job, result }: X402Delivery) {
+    const txHash = settlement.txHash.toLowerCase();
+    if (this.x402Settlements.has(txHash)) return false;
+    const payer = revenue.buyer.toLowerCase();
+    this.x402Settlements.set(txHash, settlement);
+    this.x402Receipts.set(receipt.receiptId, receipt);
+    this.machineRevenue.set(revenue.revenueId, revenue);
+    this.jobs.set(job.jobId, job);
+    this.jobResults.set(job.jobId, result);
+    this.machineCustomers.set(payer, nextMachineCustomer(revenue, this.machineCustomers.get(payer)));
+    return true;
   }
 
   async saveX402Receipt(receipt: X402Receipt): Promise<void> {
@@ -816,6 +873,41 @@ export class FirestoreAgentEconomyStore implements IAgentEconomyStore {
     const key = txHash.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const doc = await this.client.get<X402SettlementRecord>('x402_settlements', key);
     return doc ? doc.data : null;
+  }
+
+  async getX402PaymentIntent(id: string): Promise<X402PaymentIntent | null> {
+    return (await this.client.get<X402PaymentIntent>('x402_payment_intents', id))?.data ?? null;
+  }
+
+  async reserveX402PaymentIntent(intent: X402PaymentIntent) {
+    const result = await this.client.createIfAbsent('x402_payment_intents', intent.id, { ...intent });
+    return { created: result.created, record: result.document.data };
+  }
+
+  async setX402PaymentTransaction(id: string, txHash: string): Promise<void> {
+    await this.client.set('x402_payment_intents', id, { txHash });
+  }
+
+  async commitX402Delivery({ settlement, receipt, revenue, job, result }: X402Delivery) {
+    const txHash = settlement.txHash.toLowerCase();
+    const payer = revenue.buyer.toLowerCase();
+    const writes = [
+      this.client.makeUpdateWrite('x402_settlements', txHash, { ...settlement }, { exists: false }),
+      this.client.makeUpdateWrite('x402_receipts', receipt.receiptId, { ...receipt }, { exists: false }),
+      this.client.makeUpdateWrite('machine_revenue', revenue.revenueId, { ...revenue }, { exists: false }),
+      this.client.makeUpdateWrite('jobs', job.jobId, { ...job }),
+      this.client.makeUpdateWrite('job_results', job.jobId, { ...result }),
+    ];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const customer = await this.client.get<MachineCustomerRecord>('machine_customers', payer);
+      const customerWrite = this.client.makeUpdateWrite(
+        'machine_customers', payer, nextMachineCustomer(revenue, customer?.data),
+        customer ? { updateTime: customer.updateTime } : { exists: false }
+      );
+      if (await this.client.conditionalCommit([...writes, customerWrite]) === 'COMMITTED') return true;
+      if (await this.getX402Settlement(txHash)) return false;
+    }
+    throw new Error('Concurrent x402 delivery could not be committed');
   }
 
   async saveX402Receipt(receipt: X402Receipt): Promise<void> {

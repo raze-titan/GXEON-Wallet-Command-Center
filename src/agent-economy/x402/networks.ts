@@ -6,6 +6,7 @@
 
 import { TreasuryStatus } from './types.js';
 import { FORBIDDEN_EXAMPLE_ADDRESS } from './treasuryVerifier.js';
+import { isAddress } from 'viem';
 
 export interface X402NetworkDef {
   networkId: string;
@@ -25,7 +26,7 @@ export function getTreasuryStatus(): {
   const payTo = process.env.GXEON_X402_BASE_PAYTO?.trim() || '';
   const isVerified = process.env.GXEON_TREASURY_VERIFIED === 'true';
 
-  if (!payTo || !payTo.startsWith('0x') || payTo.length !== 42) {
+  if (!isAddress(payTo)) {
     return {
       status: 'TREASURY_UNVERIFIED',
       treasuryPayTo: '',

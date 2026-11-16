@@ -7,7 +7,8 @@ import {
 } from '../../src/agent-economy/x402/treasuryVerifier.js';
 import { getAgentEconomyStore } from '../../src/agent-economy/store.js';
 import { checkBazaarVisibility } from '../../src/agent-economy/connectors/x402BazaarConnector.js';
-import { getTreasuryStatus } from '../../src/agent-economy/x402/networks.js';
+import { getX402Readiness, hasBaseWalletProof, X402_BASE_NETWORK } from '../../src/agent-economy/x402/readiness.js';
+import { X402_SERVICE_PATHS, X402_PRICING } from '../../src/agent-economy/x402/pricing.js';
 import { sendJson, sendError, parseBody } from './_helper.js';
 
 export default async function handler(req: any, res: any) {
@@ -57,7 +58,7 @@ export default async function handler(req: any, res: any) {
       verifiedAt: verification.record?.verified_at,
       chainId: verification.record?.chain_id,
       instructions:
-        'Treasury ownership successfully verified and persisted. Set GXEON_X402_BASE_PAYTO to this address and GXEON_TREASURY_VERIFIED=true in your environment to enable live x402 sales.',
+        'Treasury ownership verified and recorded. See /v1/payment-methods for current settlement availability.',
     });
     return;
   }
@@ -77,14 +78,12 @@ export default async function handler(req: any, res: any) {
     }
     try {
       const record = await getAgentEconomyStore().getTreasuryVerification(config.address);
-      const walletVerified = record?.chain_id === 8453 &&
-        record.treasury_address.toLowerCase() === config.address.toLowerCase();
+      const walletVerified = hasBaseWalletProof(record, config.address);
       sendJson(res, 200, {
         configured: true,
         walletVerified,
-        verifiedAt: walletVerified ? record.verified_at : null,
-        x402Enabled: process.env.GXEON_AUTONOMOUS_SELLING_ENABLED === 'true' &&
-          getTreasuryStatus().status === 'TREASURY_VERIFIED',
+        verifiedAt: walletVerified ? record?.verified_at : null,
+        x402Enabled: (await getX402Readiness(record)).enabled,
       });
     } catch {
       sendError(res, 503, 'SERVICE_UNAVAILABLE', 'O registro de verificação está indisponível. Tente novamente.');
@@ -143,6 +142,7 @@ export default async function handler(req: any, res: any) {
 
   // GET /v1/pricing
   if (path.endsWith('/pricing') || view === 'pricing') {
+    const { enabled } = await getX402Readiness();
     sendJson(res, 200, {
 
       pricing: [
@@ -163,18 +163,15 @@ export default async function handler(req: any, res: any) {
           name: 'GXEON URL Verify',
           unit: 'url',
           unitPriceCredits: 5,
-          unitPriceUsdc: 0.025,
           minimumChargeCredits: 5,
-          minimumChargeUsdc: 0.025,
         },
         {
           serviceId: 'gxeon_json_validate_v1',
           name: 'GXEON JSON Validate',
           unit: 'payload',
           unitPriceCredits: 2,
-          unitPriceUsdc: 0.01,
           minimumChargeCredits: 2,
-          minimumChargeUsdc: 0.01,
+          ...(enabled ? { unitPriceUsdc: X402_PRICING.gxeon_json_validate_v1.unitPriceUsdc } : {}),
         },
         {
           serviceId: 'gxeon_api_health_v1',
@@ -193,12 +190,13 @@ export default async function handler(req: any, res: any) {
           billingRail: 'prepaid_credits',
           entryPack: 'PICO',
           entryPriceBrl: 0.99,
+          ...(enabled ? { unitPriceUsdc: X402_PRICING.gxeon_csv_audit_v1.unitPriceUsdc } : {}),
         },
       ],
       billingRails: [
         'stripe_live',
         'prepaid_credits',
-        ...(getTreasuryStatus().status === 'TREASURY_VERIFIED' ? ['x402'] : []),
+        ...(enabled ? ['x402'] : []),
       ],
     });
     return;
@@ -206,8 +204,7 @@ export default async function handler(req: any, res: any) {
 
   // GET /v1/payment-methods
   if (path.endsWith('/payment-methods') || view === 'payment-methods') {
-    const treasury = getTreasuryStatus();
-    const x402Enabled = treasury.status === 'TREASURY_VERIFIED';
+    const x402 = await getX402Readiness();
     sendJson(res, 200, {
       paymentMethods: [
         {
@@ -228,19 +225,12 @@ export default async function handler(req: any, res: any) {
           rail: 'x402',
           currency: 'USDC',
           protocolVersion: 2,
-          enabled: x402Enabled,
-          status: x402Enabled ? 'ACTIVE' : 'CONFIGURATION_REQUIRED',
-          description: x402Enabled
-            ? 'Native per-call machine payment via Base (EVM)'
-            : 'x402 per-call USDC is fail-closed until a real GXEON Base treasury address is ownership-verified.',
-          supportedNetworks: x402Enabled ? ['eip155:8453'] : [],
-          gateways: x402Enabled
-            ? {
-                'gxeon_url_verify_v1': '/x402/url-verify',
-                'gxeon_json_validate_v1': '/x402/json-validate',
-              }
-            : {},
-          ...(x402Enabled ? {} : { blocker: treasury.error || 'Treasury verification required' }),
+          enabled: x402.enabled,
+          status: x402.enabled ? 'ACTIVE' : 'CONFIGURATION_REQUIRED',
+          description: 'USDC per call, with a confirmed transfer on Base required for delivery.',
+          supportedNetworks: x402.enabled ? [X402_BASE_NETWORK] : [],
+          gateways: x402.enabled ? X402_SERVICE_PATHS : {},
+          ...(x402.enabled ? { facilitator: x402.facilitator } : { blocker: x402.reason }),
         },
       ],
     });

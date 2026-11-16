@@ -1,5 +1,8 @@
 import { GxeonOfferAgent, GxeonNegotiationEngine, AutonomousOfferRequest, NegotiationRequest } from '../../src/agent-economy/autonomous/index.js';
 import { getFeatureFlags } from '../../src/agent-economy/featureFlags.js';
+import { listAvailableServices } from '../../src/agent-economy/services/registry.js';
+import { getX402Readiness, X402_BASE_NETWORK } from '../../src/agent-economy/x402/readiness.js';
+import { X402_PRICING, X402_SERVICE_PATHS } from '../../src/agent-economy/x402/pricing.js';
 import { sendJson, sendError, parseBody } from './_helper.js';
 
 const offerAgent = new GxeonOfferAgent();
@@ -17,8 +20,10 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === 'GET') {
     const list = Array.from(activeOffers.values());
+    const x402 = await getX402Readiness();
+    const sellable = listAvailableServices().filter(service => Object.prototype.hasOwnProperty.call(X402_SERVICE_PATHS, service.serviceId));
     sendJson(res, 200, {
-      total: list.length + 3,
+      total: list.length + 1 + sellable.length,
       offers: list,
       canonicalOffers: [
         {
@@ -34,30 +39,19 @@ export default async function handler(req: any, res: any) {
           publicPaymentLink: 'https://buy.stripe.com/bJeeVd45Zgrp5EFdeV1B60b',
           status: 'ACTIVE',
         },
-        {
-          offerId: 'off_json_validate_v1',
+        ...sellable.map(service => ({
+          offerId: 'off_' + service.serviceId.replace(/^gxeon_/, ''),
           seller: 'GXEON',
-          serviceId: 'gxeon_json_validate_v1',
-          name: 'GXEON JSON Validate',
-          description: 'High-performance JSON syntax validation and schema conformance verification.',
-          unitPriceUsdc: 0.01,
+          serviceId: service.serviceId,
+          name: service.name,
+          description: service.description,
+          unit: service.unit,
+          unitPriceUsdc: X402_PRICING[service.serviceId].unitPriceUsdc,
           currency: 'USDC',
           paymentRail: 'x402',
-          status: 'PAUSED',
-          blocker: 'x402 treasury ownership verification is required before USDC settlement is advertised as live.',
-        },
-        {
-          offerId: 'off_url_verify_v1',
-          seller: 'GXEON',
-          serviceId: 'gxeon_url_verify_v1',
-          name: 'GXEON URL Verify',
-          description: 'Batch public URL verification with strict anti-SSRF defense.',
-          unitPriceUsdc: 0.025,
-          currency: 'USDC',
-          paymentRail: 'x402',
-          status: 'PAUSED',
-          blocker: 'x402 treasury ownership verification is required before USDC settlement is advertised as live.',
-        },
+          status: x402.enabled ? 'ACTIVE' : 'PAUSED',
+          ...(x402.enabled ? { network: X402_BASE_NETWORK, endpoint: X402_SERVICE_PATHS[service.serviceId] } : { blocker: x402.reason }),
+        })),
       ],
     });
     return;
@@ -107,9 +101,14 @@ export default async function handler(req: any, res: any) {
     sendError(res, 400, 'INVALID_INPUT', 'Required fields: buyerAgentId, requestedCapability, quantity');
     return;
   }
+  if (offerReq.currency === 'USDC') {
+    sendError(res, 400, 'INVALID_INPUT', 'x402 uses the fixed per-call prices in GET /v1/offers.');
+    return;
+  }
 
   try {
     const offer = offerAgent.createOffer(offerReq);
+    offer.paymentMethods = ['prepaid_credits'];
     activeOffers.set(offer.offerId, offer);
     sendJson(res, 201, offer);
   } catch (err: unknown) {

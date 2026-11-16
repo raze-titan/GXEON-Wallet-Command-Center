@@ -5,6 +5,8 @@ import { TOPUP_PACKS } from '../../src/agent-economy/billingCatalog.js';
 import { planAgentPurchase } from '../../src/agent-economy/marketPlanner.js';
 import { listAvailableServices } from '../../src/agent-economy/services/registry.js';
 import { fetchSpeedbotExternalOpportunities } from '../../src/agent-economy/connectors/speedbotConnector.js';
+import { getX402Readiness, X402_BASE_NETWORK } from '../../src/agent-economy/x402/readiness.js';
+import { X402_SERVICE_PATHS } from '../../src/agent-economy/x402/pricing.js';
 import { sendJson, sendError, parseBody } from './_helper.js';
 import type { AgentScope } from '../../src/agent-economy/types.js';
 
@@ -49,7 +51,7 @@ const PUBLIC_MARKET_TOOLS = [
   },
   {
     name: 'gxeon_get_agent_buying_guide',
-    description: 'Return the official GXEON machine-buyer flow for prepaid execution.',
+    description: 'Return the official GXEON machine-buyer flow and live x402 routes. Read-only.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -248,12 +250,19 @@ async function handlePublicMarketMcp(req: any, res: any) {
   }
 
   if (name === 'gxeon_get_agent_buying_guide') {
+    const x402 = await getX402Readiness();
     sendJson(res, 200, publicRpcResult(body.id, publicToolResult({
       market: 'GXEON Agent Capability Market',
       catalogEndpoint: '/v1/billing/topup',
       createCheckoutEndpoint: '/v1/billing/topup',
       publicDiscoveryMcp: '/api/v1/mcp?view=public-market',
       executionMcpEndpoint: '/api/v1/mcp',
+      x402: {
+        enabled: x402.enabled,
+        paymentMethodsEndpoint: '/v1/payment-methods',
+        offersEndpoint: '/v1/offers',
+        ...(x402.enabled ? { network: X402_BASE_NETWORK, gateways: X402_SERVICE_PATHS } : {}),
+      },
       firstPurchase: [
         'POST /v1/billing/topup with {packId,name}.',
         'Save the one-time GXEON API key returned on first account creation.',

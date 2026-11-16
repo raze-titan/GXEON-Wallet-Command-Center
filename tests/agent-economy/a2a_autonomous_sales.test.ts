@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
+import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   GxeonScout,
@@ -22,15 +23,94 @@ import {
 const TEST_OPERATOR_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as const;
 const testAccount = privateKeyToAccount(TEST_OPERATOR_KEY);
 const TEST_OPERATOR_ADDRESS = testAccount.address;
+const buyer = '0x1111111111111111111111111111111111111111';
+const asset = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const txHash = ('0x' + 'ab'.repeat(32)) as Hex;
+const nonce = ('0x' + 'c1'.repeat(32)) as Hex;
+const authEvent = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
+const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
+
+function mockSettlement(options: { status?: 'pending' | 'confirmed' | 'unmatched'; lostResponse?: boolean } = {}) {
+  let status = options.status ?? 'confirmed';
+  const log = { address: asset, transactionHash: txHash, blockHash: txHash, blockNumber: '0x11', transactionIndex: '0x0', removed: false };
+  const authorizationLog = {
+    ...log, logIndex: '0x0', data: '0x',
+    topics: encodeEventTopics({ abi: [authEvent], args: { authorizer: buyer, nonce } }),
+  };
+  const transferLog = {
+    ...log, logIndex: '0x1', data: encodeAbiParameters([{ type: 'uint256' }], [10_000n]),
+    topics: encodeEventTopics({ abi: [transferEvent], args: { from: buyer, to: TEST_OPERATOR_ADDRESS } }),
+  };
+  const fetch = vi.fn(async (input: string | Request | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : await (input as Request).json();
+    if (url.hostname === 'facilitator.payai.network') {
+      expect(body.x402Version).toBe(2);
+      expect(body.paymentRequirements.payTo).toBe(TEST_OPERATOR_ADDRESS);
+      if (url.pathname === '/verify') return Response.json({ isValid: true, payer: buyer });
+      expect(url.pathname).toBe('/settle');
+      if (options.lostResponse) throw new Error('Simulated facilitator timeout');
+      return Response.json({ success: true, transaction: txHash, network: 'eip155:8453', payer: buyer });
+    }
+    const rpcResult: Record<string, unknown> = {
+      eth_chainId: '0x2105',
+      eth_blockNumber: '0x11',
+      eth_getLogs: status === 'pending' ? [] : [authorizationLog],
+      eth_getTransactionReceipt: status === 'pending' ? null : {
+        ...log, status: '0x1', type: '0x2', from: buyer, to: asset,
+        cumulativeGasUsed: '0x1', gasUsed: '0x1', effectiveGasPrice: '0x1',
+        logs: status === 'confirmed' ? [authorizationLog, transferLog] : [authorizationLog],
+      },
+    };
+    expect(body.method in rpcResult).toBe(true);
+    return Response.json({ jsonrpc: '2.0', id: body.id, result: rpcResult[body.method] });
+  });
+  vi.stubGlobal('fetch', fetch);
+  return { fetch, confirm: () => { status = 'confirmed'; } };
+}
+
+async function paidRequest(serviceId = 'gxeon_json_validate_v1', input: unknown = { payload: { healthy: true } }) {
+  const path = serviceId === 'gxeon_csv_audit_v1' ? '/x402/csv-audit' : '/x402/json-validate';
+  const resourceUrl = 'https://gxeon-wallet-command-center.vercel.app' + path;
+  const challenge = await handleX402CapabilityExecution({ serviceId, input, resourceUrl, headers: {} });
+  expect(challenge.statusCode).toBe(402);
+  const { resource, accepts } = JSON.parse(Buffer.from(challenge.headers['PAYMENT-REQUIRED'], 'base64').toString());
+  expect(resource.url).toBe(resourceUrl);
+  const now = Math.floor(Date.now() / 1000);
+  const packet = {
+    x402Version: 2, resource, accepted: accepts[0],
+    payload: {
+      // The facilitator verification and Base receipt are mocked in these tests.
+      signature: '0x' + 'a1'.repeat(65),
+      authorization: {
+        from: buyer, to: TEST_OPERATOR_ADDRESS, value: accepts[0].amount,
+        validAfter: String(now - 1), validBefore: String(now + 59), nonce,
+      },
+    },
+  };
+  return {
+    serviceId, input, resourceUrl,
+    headers: { 'payment-signature': Buffer.from(JSON.stringify(packet)).toString('base64') },
+  };
+}
 
 describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales Test Suite', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetAgentEconomyStoreForTesting();
-    process.env.GXEON_X402_ALLOW_TEST_PROOFS = 'true';
-    process.env.GXEON_X402_BASE_PAYTO = TEST_OPERATOR_ADDRESS;
-    process.env.GXEON_TREASURY_CHALLENGE_SECRET = 'ab'.repeat(32);
-    process.env.GXEON_TREASURY_VERIFIED = 'true';
-    process.env.GXEON_AUTONOMOUS_SELLING_ENABLED = 'true';
+    vi.stubEnv('GXEON_AGENT_MARKET_ENABLED', 'true');
+    vi.stubEnv('GXEON_X402_BASE_PAYTO', TEST_OPERATOR_ADDRESS);
+    vi.stubEnv('GXEON_TREASURY_CHALLENGE_SECRET', 'ab'.repeat(32));
+    vi.stubEnv('GXEON_TREASURY_VERIFIED', 'true');
+    vi.stubEnv('GXEON_AUTONOMOUS_SELLING_ENABLED', 'true');
+    vi.stubEnv('GXEON_X402_FACILITATOR', 'payai');
+    const { challenge } = generateTreasuryChallenge(TEST_OPERATOR_ADDRESS);
+    const signature = await testAccount.signMessage({ message: challenge });
+    expect((await verifyTreasurySignature({ address: TEST_OPERATOR_ADDRESS, challenge, signature })).verified).toBe(true);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
 
@@ -225,7 +305,6 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
 
       expect(challengeRes.statusCode).toBe(402);
       expect(challengeRes.headers['PAYMENT-REQUIRED']).toBeDefined();
-      expect(challengeRes.headers['payment-required']).toBeDefined();
       expect(challengeRes.headers['X-402-Version']).toBe('2');
 
       const body = challengeRes.body as any;
@@ -305,77 +384,54 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
     });
 
 
-    it('executes capability, claims settlement atomically, persists revenue and returns PAYMENT-RESPONSE header', async () => {
-      const store = getAgentEconomyStore();
-      const testProof = {
-        network: 'eip155:8453',
-        txHash: '0xtest_tx_valid_atomic_claim_001',
-        payerAddress: '0x1234567890abcdef1234567890abcdef12345678',
-      };
-
-      const result = await handleX402CapabilityExecution({
-        serviceId: 'gxeon_json_validate_v1',
-        input: {
-          rawJson: JSON.stringify({ name: 'GXEON', live: true }),
-        },
-        headers: {
-          'payment-signature': JSON.stringify(testProof),
-        },
-        resourceUrl: 'https://gxeon.ai/x402/json-validate',
-      });
-
+    it('records a Base transfer and returns the same receipt on concurrent retries', async () => {
+      const { fetch } = mockSettlement();
+      const request = await paidRequest();
+      const responses = await Promise.all([
+        handleX402CapabilityExecution(request),
+        handleX402CapabilityExecution(request),
+      ]);
+      const retry = await handleX402CapabilityExecution(request);
+      const result = responses.find(response => response.statusCode === 200) ?? retry;
       expect(result.statusCode).toBe(200);
-      expect(result.headers['PAYMENT-RESPONSE']).toBeDefined();
-      expect(result.headers['X-402-Receipt']).toBeDefined();
+      expect(retry.body).toEqual(result.body);
+      expect(retry.headers['PAYMENT-RESPONSE']).toBe(result.headers['PAYMENT-RESPONSE']);
+      const receipt = JSON.parse(Buffer.from(retry.headers['PAYMENT-RESPONSE'], 'base64').toString());
+      expect(receipt).toMatchObject({ success: true, network: 'eip155:8453', transaction: txHash });
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(1);
 
-      const body = result.body as any;
-      expect(body.status).toBe('SUCCESS');
-      expect(body.result.valid).toBe(true);
-      expect(body.receipt).toBeDefined();
-      expect(body.receipt.receiptId.startsWith('rcpt_')).toBe(true);
-      expect(body.receipt.seller).toBe('GXEON');
-      expect(body.receipt.paymentRail).toBe('x402');
-      expect(body.receipt.currency).toBe('USDC');
-      expect(body.receipt.resultHash).toBeDefined();
-      expect(body.receipt.evidenceHash).toBeDefined();
-
-      // Verify settlement was recorded atomically in store
-      const settlement = await store.getX402Settlement(testProof.txHash);
-      expect(settlement).toBeDefined();
-      expect(settlement?.state).toBe('DELIVERED');
-
-      // Verify real machine revenue record was created
-      const revenues = await store.listMachineRevenue();
-      expect(revenues.length).toBe(1);
-      expect(revenues[0].status).toBe('SETTLED');
-      expect(revenues[0].amountUsdc).toBe(0.01);
-      expect(revenues[0].txHash).toBe(testProof.txHash);
-
-      // Verify machine customer was recorded
-      const customers = await store.listMachineCustomers();
-      expect(customers.length).toBe(1);
-      expect(customers[0].jobsPurchased).toBe(1);
-      expect(customers[0].totalUsdcPaid).toBe(0.01);
-
-      // REPLAY TEST: Replaying the exact same payment must be blocked
-      const replayResult = await handleX402CapabilityExecution({
-        serviceId: 'gxeon_json_validate_v1',
-        input: { rawJson: '{"test":true}' },
-        headers: {
-          'payment-signature': JSON.stringify(testProof),
-        },
-        resourceUrl: 'https://gxeon.ai/x402/json-validate',
-      });
-
-      expect([402, 409]).toContain(replayResult.statusCode);
-      expect((replayResult.body as any).error).toMatch(/REPLAY_BLOCKED|PAYMENT_VERIFICATION_FAILED/);
-
-      // Revenue must not have increased
-      const revenuesAfterReplay = await store.listMachineRevenue();
-      expect(revenuesAfterReplay.length).toBe(1);
+      const store = getAgentEconomyStore();
+      const delivered = await store.getX402Settlement(txHash);
+      expect(delivered?.state).toBe('DELIVERED');
+      expect(await store.listMachineRevenue()).toMatchObject([{ status: 'SETTLED', txHash, amountUsdc: 0.01 }]);
+      expect(await store.listMachineCustomers()).toMatchObject([{ jobsPurchased: 1, totalUsdcPaid: 0.01 }]);
+      expect((await handleX402CapabilityExecution({ ...request, input: { payload: {} } })).statusCode).toBe(409);
     });
 
-    it('rejects unsupported network and logs invalid payment attempt', async () => {
+    it('waits for the Base receipt and reconciles an interrupted facilitator call using the original payment', async () => {
+      const { confirm, fetch } = mockSettlement({ status: 'pending', lostResponse: true });
+      const request = await paidRequest('gxeon_csv_audit_v1', { csv: 'id,name\n1,GXEON' });
+      const pending = await handleX402CapabilityExecution(request);
+      expect(pending.statusCode).toBe(503);
+      expect(pending.body).toMatchObject({ error: 'SETTLEMENT_PENDING' });
+      expect(await getAgentEconomyStore().listMachineRevenue()).toHaveLength(0);
+
+      confirm();
+      const paid = await handleX402CapabilityExecution(request);
+      expect(paid.statusCode).toBe(200);
+      expect(paid.body).toMatchObject({ result: { qualityPass: true }, receipt: { txHash, amountUsdc: '0.010000' } });
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(1);
+    });
+
+    it('requires a matching USDC transfer even after facilitator success', async () => {
+      mockSettlement({ status: 'unmatched' });
+      const result = await handleX402CapabilityExecution(await paidRequest());
+      expect(result.statusCode).toBe(402);
+      expect(result.body).toMatchObject({ error: 'PAYMENT_VERIFICATION_FAILED' });
+      expect(await getAgentEconomyStore().listMachineRevenue()).toHaveLength(0);
+    });
+
+    it('declines payment proofs for unsupported networks', async () => {
       const res = await handleX402CapabilityExecution({
         serviceId: 'gxeon_json_validate_v1',
         input: { rawJson: '{"test":true}' },

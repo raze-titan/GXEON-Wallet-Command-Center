@@ -81,6 +81,7 @@ export default function TreasuryConnect() {
   }
 
   const verifiedAt = proof?.verifiedAt ?? status?.verifiedAt;
+  const walletVerified = Boolean(proof || status?.walletVerified);
 
   return (
     <div className="min-h-screen bg-[#070D18] px-5 py-10 text-slate-100 sm:py-16">
@@ -94,7 +95,9 @@ export default function TreasuryConnect() {
           </div>
           <h1 className="text-3xl font-bold tracking-tight">Conectar carteira</h1>
           <p className="mt-3 text-sm leading-6 text-slate-300">
-            Confirme o endereço de recebimento USDC do GXEON na rede Base. A carteira pede sua aprovação para conectar e assinar a verificação.
+            {walletVerified
+              ? 'A assinatura de verificação do endereço de recebimento USDC foi registrada.'
+              : 'Confirme o endereço de recebimento USDC do GXEON na rede Base. A carteira pede sua aprovação para conectar e assinar a verificação.'}
           </p>
           <div className="mt-7 grid gap-3" aria-busy={busy}>
             {pending ? (
@@ -106,12 +109,12 @@ export default function TreasuryConnect() {
                   Escolher outra carteira
                 </button>
               </>
-            ) : !proof && walletChoices.map(({ id, label }) => (
+            ) : !walletVerified && walletChoices.map(({ id, label }) => (
               <button
                 key={id}
                 type="button"
                 className={id === 'coinbase_wallet' ? buttonClass : secondaryButtonClass}
-                disabled={busy || status?.configured === false}
+                disabled={busy || status?.configured === false || (!status && !error)}
                 onClick={() => void connect(id)}
               >
                 {label}
@@ -121,7 +124,7 @@ export default function TreasuryConnect() {
           {busy && <p className="mt-4 flex items-center gap-2 text-sm text-slate-300" role="status"><Loader2 className="animate-spin" size={16} /> Aguardando confirmação da carteira…</p>}
           {error && <p className="mt-4 text-sm text-amber-300" role="alert">{error}</p>}
           {status?.configured === false && <p className="mt-4 text-sm text-amber-300" role="status">A conexão da carteira ainda está indisponível.</p>}
-          {(proof || status?.walletVerified) && (
+          {walletVerified && (
             <div className="mt-5 flex gap-3 rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-emerald-100" role="status">
               <ShieldCheck size={20} className="shrink-0" aria-hidden="true" />
               <div>

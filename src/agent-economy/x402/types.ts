@@ -10,7 +10,6 @@ export interface X402AcceptOption {
   amount: string; // Atomic units (6 decimals for USDC, e.g. "10000" = 0.01 USDC)
   payTo: string; // GXEON Recipient Address
   maxTimeoutSeconds: number;
-  resource: string;
   extra?: {
     name?: string;
     version?: string;
@@ -22,8 +21,8 @@ export interface X402Challenge {
   x402Version: 2;
   status: 402;
   title: string;
-  description: string;
-  resource: string;
+  error: string;
+  resource: { url: string; description: string; mimeType: string };
   serviceId: string;
   accepts: X402AcceptOption[];
 }
@@ -32,14 +31,14 @@ export interface Eip3009Authorization {
   from: string;
   to: string;
   value: string;
-  validAfter: number;
-  validBefore: number;
+  validAfter: string;
+  validBefore: string;
   nonce: string;
 }
 
 export interface X402PaymentPayload {
   x402Version: 2;
-  resource: {
+  resource?: {
     url: string;
     description?: string;
     mimeType?: string;
@@ -57,39 +56,20 @@ export interface X402PaymentPayload {
       assetTransferMethod?: 'eip3009' | 'transfer';
     };
   };
-  payload: {
-    signature?: string;
-    authorization?: Eip3009Authorization;
-    paymentFlow?: 'upfront' | 'authorization';
-    txHash?: string;
-  };
-  extensions?: Record<string, unknown>;
+  payload: { signature: string; authorization: Eip3009Authorization };
 }
 
-export interface X402PaymentProof {
-  network: string; // e.g. "eip155:8453"
-  txHash: string; // 0x... transaction hash on Base
-  payerAddress?: string;
-  amount?: string;
-  asset?: string;
+export interface X402PaymentIntent {
+  id: string;
+  requestHash: string;
+  firstBlock: string;
+  txHash?: string;
 }
 
 export interface X402SettlementVerification {
-  verified: boolean;
   settlementId: string;
-  network: string;
-  txHash: string;
-  payer: string;
-  recipient: string;
-  amountAtomic: string;
-  amountUsdc: number;
-  asset: string;
-  blockNumber?: number;
-  confirmations?: number;
-  timestamp: string;
-  paymentFlow?: 'upfront' | 'authorization';
-  authorization?: Eip3009Authorization;
-  error?: string;
+  txHash: `0x${string}`;
+  blockNumber: number;
 }
 
 export type X402SettlementState =
@@ -117,6 +97,7 @@ export interface X402SettlementRecord {
   claimedAt: string;
   blockNumber?: number;
   jobId?: string;
+  receiptId?: string;
   updatedAt?: string;
 }
 
@@ -169,6 +150,10 @@ export interface MachineCustomerRecord {
 export interface X402SettlementResponse {
   x402Version: 2;
   status: 'SUCCESS';
+  success: true;
+  transaction: string;
+  network: string;
+  payer: string;
   settlementId: string;
   txHash?: string;
   blockNumber?: number | string;
