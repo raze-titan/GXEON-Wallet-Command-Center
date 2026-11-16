@@ -1,3 +1,4 @@
+import { generateKeyPairSync, verify } from 'node:crypto';
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -30,7 +31,11 @@ const nonce = ('0x' + 'c1'.repeat(32)) as Hex;
 const authEvent = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
 
-function mockSettlement(options: { status?: 'pending' | 'unfinalized' | 'confirmed' | 'unmatched'; lostResponse?: boolean } = {}) {
+function mockSettlement(options: {
+  status?: 'pending' | 'unfinalized' | 'confirmed' | 'unmatched';
+  lostResponse?: boolean;
+  rejectedKey?: boolean;
+} = {}) {
   let status = options.status ?? 'confirmed';
   const log = { address: asset, transactionHash: txHash, blockHash: txHash, blockNumber: '0x11', transactionIndex: '0x0', removed: false };
   const authorizationLog = {
@@ -47,6 +52,7 @@ function mockSettlement(options: { status?: 'pending' | 'unfinalized' | 'confirm
     if (url.hostname === 'facilitator.payai.network') {
       expect(body.x402Version).toBe(2);
       expect(body.paymentRequirements.payTo).toBe(TEST_OPERATOR_ADDRESS);
+      if (options.rejectedKey) return Response.json({ isValid: false }, { status: 401 });
       if (url.pathname === '/verify') return Response.json({ isValid: true, payer: buyer });
       expect(url.pathname).toBe('/settle');
       if (options.lostResponse) throw new Error('Simulated facilitator timeout');
@@ -108,6 +114,8 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
     vi.stubEnv('GXEON_TREASURY_VERIFIED', 'true');
     vi.stubEnv('GXEON_AUTONOMOUS_SELLING_ENABLED', 'true');
     vi.stubEnv('GXEON_X402_FACILITATOR', 'payai');
+    vi.stubEnv('PAYAI_API_KEY_ID', '');
+    vi.stubEnv('PAYAI_API_KEY_SECRET', '');
     const { challenge } = generateTreasuryChallenge(TEST_OPERATOR_ADDRESS);
     const signature = await testAccount.signMessage({ message: challenge });
     expect((await verifyTreasurySignature({ address: TEST_OPERATOR_ADDRESS, challenge, signature })).verified).toBe(true);
@@ -389,6 +397,61 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
     });
 
 
+    it('signs PayAI verification and settlement separately with the configured merchant key', async () => {
+      const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+      const keyId = 'test-merchant-key';
+      const secret = privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
+      vi.stubEnv('PAYAI_API_KEY_ID', keyId);
+      vi.stubEnv('PAYAI_API_KEY_SECRET', 'payai_sk_' + secret);
+      const { fetch } = mockSettlement();
+
+      const result = await handleX402CapabilityExecution(await paidRequest());
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.stringify(result)).not.toContain(keyId);
+      const calls = fetch.mock.calls.filter(([url]) => String(url).startsWith('https://facilitator.payai.network/'));
+      expect(calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/verify', '/settle']);
+      const tokens = calls.map(([, init]) => new Headers(init?.headers).get('authorization')!);
+      expect(new Set(tokens).size).toBe(2);
+      for (const token of tokens) {
+        expect(token).toMatch(/^Bearer /);
+        const [header, claims, signature] = token.slice('Bearer '.length).split('.');
+        expect(JSON.parse(Buffer.from(header, 'base64url').toString())).toEqual({ alg: 'EdDSA', typ: 'JWT', kid: keyId });
+        const payload = JSON.parse(Buffer.from(claims, 'base64url').toString());
+        expect(payload).toMatchObject({ sub: keyId, iss: 'payai-merchant', jti: expect.any(String) });
+        expect(payload.exp - payload.iat).toBe(120);
+        expect(verify(null, Buffer.from(header + '.' + claims), publicKey, Buffer.from(signature, 'base64url'))).toBe(true);
+      }
+    });
+
+    it('pauses x402 when the merchant key pair is incomplete', async () => {
+      vi.stubEnv('PAYAI_API_KEY_ID', 'test-merchant-key');
+      const { fetch } = mockSettlement();
+      const result = await handleX402CapabilityExecution({
+        serviceId: 'gxeon_json_validate_v1',
+        input: { payload: {} },
+        resourceUrl: 'https://gxeon.ai/x402/json-validate',
+        headers: {},
+      });
+
+      expect(result).toMatchObject({ statusCode: 503, body: { error: 'FACILITATOR_AUTH_NOT_CONFIGURED' } });
+      expect(JSON.stringify(result)).not.toContain('test-merchant-key');
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('stops before settlement when PayAI rejects the merchant authentication', async () => {
+      const { privateKey } = generateKeyPairSync('ed25519');
+      vi.stubEnv('PAYAI_API_KEY_ID', 'rejected-key');
+      vi.stubEnv('PAYAI_API_KEY_SECRET', privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'));
+      const { fetch } = mockSettlement({ rejectedKey: true });
+      const request = await paidRequest();
+
+      await expect(handleX402CapabilityExecution(request)).rejects.toThrow('PayAI did not authorize the request.');
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/verify'))).toHaveLength(1);
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(0);
+      expect(await getAgentEconomyStore().listMachineRevenue()).toHaveLength(0);
+    });
+
     it('records a Base transfer and returns the same receipt on concurrent retries', async () => {
       const { fetch } = mockSettlement();
       const request = await paidRequest();
@@ -404,6 +467,8 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
       const receipt = JSON.parse(Buffer.from(retry.headers['PAYMENT-RESPONSE'], 'base64').toString());
       expect(receipt).toMatchObject({ success: true, network: 'eip155:8453', transaction: txHash });
       expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/settle'))).toHaveLength(1);
+      const payaiCalls = fetch.mock.calls.filter(([url]) => String(url).startsWith('https://facilitator.payai.network/'));
+      expect(payaiCalls.every(([, init]) => !new Headers(init?.headers).has('authorization'))).toBe(true);
 
       const store = getAgentEconomyStore();
       const delivered = await store.getX402Settlement(txHash);

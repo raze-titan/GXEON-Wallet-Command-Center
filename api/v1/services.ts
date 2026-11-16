@@ -79,11 +79,13 @@ export default async function handler(req: any, res: any) {
     try {
       const record = await getAgentEconomyStore().getTreasuryVerification(config.address);
       const walletVerified = hasBaseWalletProof(record, config.address);
+      const x402 = await getX402Readiness(record);
       sendJson(res, 200, {
         configured: true,
         walletVerified,
         verifiedAt: walletVerified ? record?.verified_at : null,
-        x402Enabled: (await getX402Readiness(record)).enabled,
+        x402Enabled: x402.enabled,
+        ...(x402.enabled ? { x402FacilitatorAuthentication: x402.facilitatorAuthentication } : {}),
       });
     } catch {
       sendError(res, 503, 'SERVICE_UNAVAILABLE', 'O registro de verificação está indisponível. Tente novamente.');
@@ -230,7 +232,10 @@ export default async function handler(req: any, res: any) {
           description: 'USDC per call, with a confirmed transfer on Base required for delivery.',
           supportedNetworks: x402.enabled ? [X402_BASE_NETWORK] : [],
           gateways: x402.enabled ? X402_SERVICE_PATHS : {},
-          ...(x402.enabled ? { facilitator: x402.facilitator } : { blocker: x402.reason }),
+          ...(x402.enabled ? {
+            facilitator: x402.facilitator,
+            facilitatorAuthentication: x402.facilitatorAuthentication,
+          } : { blocker: x402.reason }),
         },
       ],
     });

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createPublicClient, http, isAddress, parseAbiItem, parseEventLogs, type Address, type Hex } from 'viem';
 import { base } from 'viem/chains';
 import { getAgentEconomyStore } from '../store.js';
+import { createPayAIHeaders, PAYAI_FACILITATOR, readPayAIAuthentication, type PayAIAuthentication } from './payaiAuth.js';
 import type { X402AcceptOption, X402PaymentPayload, X402SettlementVerification } from './types.js';
 
 const authorizationUsed = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
@@ -58,14 +59,17 @@ type PaymentResult =
   | { kind: 'pending' }
   | { kind: 'conflict' };
 
-async function callFacilitator(facilitator: string, operation: 'verify' | 'settle', payment: X402PaymentPayload) {
-  const response = await fetch(facilitator + '/' + operation, {
+async function callFacilitator(operation: 'verify' | 'settle', payment: X402PaymentPayload, authentication: PayAIAuthentication) {
+  const response = await fetch(PAYAI_FACILITATOR + '/' + operation, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...createPayAIHeaders(authentication) },
     body: JSON.stringify({ x402Version: 2, paymentPayload: payment, paymentRequirements: payment.accepted }),
     redirect: 'error',
     signal: AbortSignal.timeout(operation === 'verify' ? 6_000 : 18_000),
   });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('PayAI did not authorize the request.');
+  }
   const data = await response.json();
   if (operation === 'verify' && !response.ok && data?.isValid !== false) {
     throw new Error('Facilitator verification unavailable');
@@ -75,7 +79,6 @@ async function callFacilitator(facilitator: string, operation: 'verify' | 'settl
 
 export async function verifyX402Settlement(
   payment: X402PaymentPayload,
-  facilitator: string,
   requestHash: string,
 ): Promise<PaymentResult> {
   const store = getAgentEconomyStore();
@@ -97,7 +100,9 @@ export async function verifyX402Settlement(
       return { kind: 'invalid', message: 'Payment authorization expiry does not match the quoted terms.' };
     }
 
-    const verified = await callFacilitator(facilitator, 'verify', payment);
+    const authentication = readPayAIAuthentication();
+    if (!authentication) throw new Error('PayAI merchant authentication is unavailable.');
+    const verified = await callFacilitator('verify', payment, authentication);
     if (verified?.isValid !== true || (verified.payer && !sameAddress(verified.payer, auth.from))) {
       return { kind: 'invalid', message: 'The facilitator did not verify the authorization.' };
     }
@@ -112,7 +117,7 @@ export async function verifyX402Settlement(
 
     if (intent.requestHash !== requestHash) return { kind: 'conflict' };
     if (reservation.created) {
-      const submitted = await callFacilitator(facilitator, 'settle', payment).catch(() => null);
+      const submitted = await callFacilitator('settle', payment, authentication).catch(() => null);
       if (submitted?.network === payment.accepted.network &&
           typeof submitted.transaction === 'string' && hashPattern.test(submitted.transaction)) {
         const txHash = submitted.transaction.toLowerCase();

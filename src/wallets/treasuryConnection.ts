@@ -23,6 +23,7 @@ export interface TreasuryStatus {
   walletVerified: boolean;
   verifiedAt?: string | null;
   x402Enabled: boolean;
+  x402FacilitatorAuthentication?: 'wallet' | 'merchant_configured';
 }
 
 interface TreasuryChallenge {

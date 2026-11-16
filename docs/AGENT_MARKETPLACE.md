@@ -96,3 +96,9 @@ Production purchase/execution currently has two active BRL rails:
 The live x402 status is available at `GET /v1/payment-methods`. When enabled, the Base USDC pilot serves `POST /x402/json-validate` and `POST /x402/csv-audit` for 0.01 USDC per call, paid to the verified treasury. The receiving wallet stays non-custodial. PayAI verifies and submits the buyer's signed x402 payment, and GXEON checks the finalized Base transaction before it records delivery and revenue together.
 
 Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry the same input with the buyer's x402 v2 `PAYMENT-SIGNATURE` header. If the API reports `SETTLEMENT_PENDING`, follow `Retry-After` and reuse the same input and signature while the transaction finalizes. A successful response includes the result and the finalized Base transaction hash.
+
+### PayAI merchant account
+
+Use the API Key ID and API Key Secret from the [PayAI merchant dashboard](https://merchant.payai.network/dashboard). Save them as sensitive server variables `PAYAI_API_KEY_ID` and `PAYAI_API_KEY_SECRET` in the Vercel Production environment, then redeploy. The server uses these credentials to sign PayAI requests. The receiving address is still the verified Base treasury.
+
+Check `facilitatorAuthentication` in the x402 entry of `GET /v1/payment-methods`. With neither variable set, `wallet` uses the PayAI allowance associated with the receiving address. With a valid local key pair, `merchant_configured` indicates the server can sign requests. PayAI checks whether it recognizes the key when it receives an authenticated request. If only one variable is supplied or the secret cannot be loaded, x402 is unavailable until the configuration is corrected.

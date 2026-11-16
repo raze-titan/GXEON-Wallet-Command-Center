@@ -135,6 +135,24 @@ export default function TreasuryConnect() {
             </div>
           )}
           {status?.configured && <p className="mt-5 text-xs text-slate-400">{status.x402Enabled ? 'Recebimentos x402 ativos' : 'Recebimentos x402 pausados'}</p>}
+          {walletVerified && (
+            <div className="mt-5 border-t border-[#263B59] pt-4">
+              {status?.x402FacilitatorAuthentication === 'wallet' && (
+                <p className="text-sm text-slate-300">PayAI usa a cota do endereço de recebimento.</p>
+              )}
+              {status?.x402FacilitatorAuthentication === 'merchant_configured' && (
+                <p className="text-sm text-slate-300">Credenciais da conta PayAI configuradas no servidor.</p>
+              )}
+              <a
+                className="mt-2 inline-block text-sm font-semibold text-cyan-300 hover:text-cyan-100"
+                href="https://merchant.payai.network/dashboard"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Abrir painel PayAI
+              </a>
+            </div>
+          )}
         </section>
       </main>
     </div>
