@@ -1,0 +1,15 @@
+{
+  "payTo": [
+    "0x9465810Ae36B0aF3C682BA6fCA0fD83e0a3EF428"
+  ],
+  "requests": {
+    "/x402/json-validate": {
+      "method": "POST",
+      "body": {
+        "payload": {
+          "id": 1
+        }
+      }
+    }
+  }
+}
