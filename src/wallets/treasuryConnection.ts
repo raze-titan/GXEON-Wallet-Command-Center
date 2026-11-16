@@ -24,6 +24,7 @@ export interface TreasuryStatus {
   verifiedAt?: string | null;
   x402Enabled: boolean;
   x402FacilitatorAuthentication?: 'wallet' | 'merchant_configured';
+  x402FacilitatorCredentialSource?: 'vercel' | 'supabase';
 }
 
 interface TreasuryChallenge {

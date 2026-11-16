@@ -85,7 +85,10 @@ export default async function handler(req: any, res: any) {
         walletVerified,
         verifiedAt: walletVerified ? record?.verified_at : null,
         x402Enabled: x402.enabled,
-        ...(x402.enabled ? { x402FacilitatorAuthentication: x402.facilitatorAuthentication } : {}),
+        ...(x402.enabled ? {
+          x402FacilitatorAuthentication: x402.facilitatorAuthentication,
+          x402FacilitatorCredentialSource: x402.facilitatorCredentialSource,
+        } : {}),
       });
     } catch {
       sendError(res, 503, 'SERVICE_UNAVAILABLE', 'O registro de verificação está indisponível. Tente novamente.');
@@ -235,6 +238,7 @@ export default async function handler(req: any, res: any) {
           ...(x402.enabled ? {
             facilitator: x402.facilitator,
             facilitatorAuthentication: x402.facilitatorAuthentication,
+            facilitatorCredentialSource: x402.facilitatorCredentialSource,
           } : { blocker: x402.reason }),
         },
       ],

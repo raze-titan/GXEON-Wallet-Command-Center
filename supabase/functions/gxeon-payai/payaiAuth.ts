@@ -1,14 +1,16 @@
+import { Buffer } from 'node:buffer';
 import { createPrivateKey, randomUUID, sign, type KeyObject } from 'node:crypto';
 
 export const PAYAI_FACILITATOR = 'https://facilitator.payai.network';
+export type PayAIOperation = 'verify' | 'settle';
 
 export type PayAIAuthentication =
   | { mode: 'wallet' }
   | { mode: 'merchant'; keyId: string; privateKey: KeyObject };
 
-export function readPayAIAuthentication(): PayAIAuthentication | null {
-  const keyId = process.env.PAYAI_API_KEY_ID?.trim();
-  const configuredSecret = process.env.PAYAI_API_KEY_SECRET?.trim();
+export function readPayAIAuthentication(id?: string, rawSecret?: string): PayAIAuthentication | null {
+  const keyId = id?.trim();
+  const configuredSecret = rawSecret?.trim();
   if (!keyId && !configuredSecret) return { mode: 'wallet' };
   if (!keyId || !configuredSecret) return null;
 
@@ -23,7 +25,7 @@ export function readPayAIAuthentication(): PayAIAuthentication | null {
   }
 }
 
-export function createPayAIHeaders(authentication: PayAIAuthentication): Record<string, string> {
+function createPayAIHeaders(authentication: PayAIAuthentication): Record<string, string> {
   if (authentication.mode === 'wallet') return {};
 
   const { keyId, privateKey } = authentication;
@@ -36,4 +38,14 @@ export function createPayAIHeaders(authentication: PayAIAuthentication): Record<
   const signature = sign(null, Buffer.from(message), privateKey).toString('base64url');
 
   return { Authorization: `Bearer ${message}.${signature}` };
+}
+
+export function requestPayAI(operation: PayAIOperation, body: string, authentication: PayAIAuthentication) {
+  return fetch(PAYAI_FACILITATOR + '/' + operation, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...createPayAIHeaders(authentication) },
+    body,
+    redirect: 'error',
+    signal: AbortSignal.timeout(operation === 'verify' ? 6_000 : 18_000),
+  });
 }

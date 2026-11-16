@@ -1,7 +1,8 @@
+import { PAYAI_FACILITATOR } from '../../../supabase/functions/gxeon-payai/payaiAuth.js';
 import { getFeatureFlags } from '../featureFlags.js';
 import { getAgentEconomyStore } from '../store.js';
 import { getTreasuryStatus } from './networks.js';
-import { PAYAI_FACILITATOR, readPayAIAuthentication } from './payaiAuth.js';
+import { getPayAIStatus } from './payaiClient.js';
 import type { TreasuryVerificationRecord } from './treasuryVerifier.js';
 
 export const X402_BASE_NETWORK = 'eip155:8453';
@@ -21,10 +22,6 @@ export async function getX402Readiness(walletProof?: TreasuryVerificationRecord 
   if (process.env.GXEON_X402_FACILITATOR !== 'payai') {
     return { enabled: false, error: 'FACILITATOR_NOT_CONFIGURED', reason: 'A Base USDC settlement facilitator is required.' } as const;
   }
-  const authentication = readPayAIAuthentication();
-  if (!authentication) {
-    return { enabled: false, error: 'FACILITATOR_AUTH_NOT_CONFIGURED', reason: 'PayAI merchant authentication requires a valid key pair.' } as const;
-  }
   try {
     const record = walletProof === undefined
       ? await getAgentEconomyStore().getTreasuryVerification(treasury.treasuryPayTo) : walletProof;
@@ -34,10 +31,20 @@ export async function getX402Readiness(walletProof?: TreasuryVerificationRecord 
   } catch {
     return { enabled: false, error: 'WALLET_PROOF_UNAVAILABLE', reason: 'The receiving address proof is temporarily unavailable.' } as const;
   }
+  let authentication: Awaited<ReturnType<typeof getPayAIStatus>>;
+  try {
+    authentication = await getPayAIStatus();
+  } catch {
+    return { enabled: false, error: 'FACILITATOR_AUTH_UNAVAILABLE', reason: 'PayAI authentication service is temporarily unavailable.' } as const;
+  }
+  if (!authentication) {
+    return { enabled: false, error: 'FACILITATOR_AUTH_NOT_CONFIGURED', reason: 'PayAI merchant authentication requires a valid key pair.' } as const;
+  }
   return {
     enabled: true,
     payTo: treasury.treasuryPayTo,
     facilitator: PAYAI_FACILITATOR,
     facilitatorAuthentication: authentication.mode === 'merchant' ? 'merchant_configured' : 'wallet',
+    facilitatorCredentialSource: authentication.source,
   } as const;
 }

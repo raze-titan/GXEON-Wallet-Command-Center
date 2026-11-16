@@ -143,6 +143,9 @@ export default function TreasuryConnect() {
               {status?.x402FacilitatorAuthentication === 'merchant_configured' && (
                 <p className="text-sm text-slate-300">Credenciais da conta PayAI configuradas no servidor.</p>
               )}
+              {status?.x402FacilitatorCredentialSource === 'supabase' && (
+                <p className="mt-1 text-xs text-slate-400">Autenticação PayAI via Supabase.</p>
+              )}
               <a
                 className="mt-2 inline-block text-sm font-semibold text-cyan-300 hover:text-cyan-100"
                 href="https://merchant.payai.network/dashboard"

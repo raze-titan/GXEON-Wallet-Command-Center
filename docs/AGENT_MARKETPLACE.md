@@ -99,6 +99,8 @@ Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry t
 
 ### PayAI merchant account
 
-Use the API Key ID and API Key Secret from the [PayAI merchant dashboard](https://merchant.payai.network/dashboard). Save them as sensitive server variables `PAYAI_API_KEY_ID` and `PAYAI_API_KEY_SECRET` in the Vercel Production environment, then redeploy. The server uses these credentials to sign PayAI requests. The receiving address is still the verified Base treasury.
+Use the API Key ID and API Key Secret from the [PayAI merchant dashboard](https://merchant.payai.network/dashboard). When `GXEON_PAYAI_EDGE_URL` is set, save `PAYAI_API_KEY_ID` and `PAYAI_API_KEY_SECRET` in [Edge Function Secrets for xpex-evidence-portfolio](https://supabase.com/dashboard/project/hklixvnakprhejtdghns/functions/secrets). The Edge Function signs and makes the PayAI verification and settlement requests after validating the OIDC identity of the GXEON Vercel production deployment. Both PayAI values stay in Supabase.
 
-Check `facilitatorAuthentication` in the x402 entry of `GET /v1/payment-methods`. With neither variable set, `wallet` uses the PayAI allowance associated with the receiving address. With a valid local key pair, `merchant_configured` indicates the server can sign requests. PayAI checks whether it recognizes the key when it receives an authenticated request. If only one variable is supplied or the secret cannot be loaded, x402 is unavailable until the configuration is corrected.
+Check `facilitatorCredentialSource` and `facilitatorAuthentication` in the x402 entry of `GET /v1/payment-methods`. With neither variable set at the active source, `wallet` uses the PayAI allowance associated with the receiving address. A valid local key pair reports `merchant_configured`; PayAI checks whether it recognizes the key on the first authenticated payment request. Set both values together to avoid pausing x402 during configuration.
+
+To move the keys back to Vercel, add both Production secrets there, remove `GXEON_PAYAI_EDGE_URL`, and redeploy. The receiving address is the verified Base treasury in either configuration.

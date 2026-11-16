@@ -1,4 +1,5 @@
 import { generateKeyPairSync, verify } from 'node:crypto';
+import { getVercelOidcToken } from '@vercel/oidc';
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -14,12 +15,15 @@ import {
 import { handleX402CapabilityExecution } from '../../src/agent-economy/x402/middleware.js';
 import { getX402Price } from '../../src/agent-economy/x402/pricing.js';
 import { createX402Receipt } from '../../src/agent-economy/x402/receipt.js';
+import { getX402Readiness } from '../../src/agent-economy/x402/readiness.js';
 import { resetAgentEconomyStoreForTesting, getAgentEconomyStore } from '../../src/agent-economy/store.js';
 import {
   generateTreasuryChallenge,
   verifyTreasurySignature,
   FORBIDDEN_EXAMPLE_ADDRESS,
 } from '../../src/agent-economy/x402/treasuryVerifier.js';
+
+vi.mock('@vercel/oidc', () => ({ getVercelOidcToken: vi.fn() }));
 
 const TEST_OPERATOR_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as const;
 const testAccount = privateKeyToAccount(TEST_OPERATOR_KEY);
@@ -30,11 +34,13 @@ const txHash = ('0x' + 'ab'.repeat(32)) as Hex;
 const nonce = ('0x' + 'c1'.repeat(32)) as Hex;
 const authEvent = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
+const payaiEdge = 'https://hklixvnakprhejtdghns.supabase.co/functions/v1/gxeon-payai';
 
 function mockSettlement(options: {
   status?: 'pending' | 'unfinalized' | 'confirmed' | 'unmatched';
   lostResponse?: boolean;
   rejectedKey?: boolean;
+  edgeMode?: 'wallet' | 'merchant' | 'misconfigured';
 } = {}) {
   let status = options.status ?? 'confirmed';
   const log = { address: asset, transactionHash: txHash, blockHash: txHash, blockNumber: '0x11', transactionIndex: '0x0', removed: false };
@@ -48,13 +54,19 @@ function mockSettlement(options: {
   };
   const fetch = vi.fn(async (input: string | Request | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
+    const usesEdge = options.edgeMode !== undefined && url.origin + url.pathname === payaiEdge;
+    if (usesEdge) {
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer test-vercel-oidc');
+      if (init?.method === 'GET') return Response.json({ mode: options.edgeMode });
+    }
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : await (input as Request).json();
-    if (url.hostname === 'facilitator.payai.network') {
+    if (usesEdge || url.hostname === 'facilitator.payai.network') {
       expect(body.x402Version).toBe(2);
       expect(body.paymentRequirements.payTo).toBe(TEST_OPERATOR_ADDRESS);
       if (options.rejectedKey) return Response.json({ isValid: false }, { status: 401 });
-      if (url.pathname === '/verify') return Response.json({ isValid: true, payer: buyer });
-      expect(url.pathname).toBe('/settle');
+      const operation = usesEdge ? url.searchParams.get('operation') : url.pathname.slice(1);
+      if (operation === 'verify') return Response.json({ isValid: true, payer: buyer });
+      expect(operation).toBe('settle');
       if (options.lostResponse) throw new Error('Simulated facilitator timeout');
       return Response.json({ success: true, transaction: txHash, network: 'eip155:8453', payer: buyer });
     }
@@ -114,6 +126,7 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
     vi.stubEnv('GXEON_TREASURY_VERIFIED', 'true');
     vi.stubEnv('GXEON_AUTONOMOUS_SELLING_ENABLED', 'true');
     vi.stubEnv('GXEON_X402_FACILITATOR', 'payai');
+    vi.stubEnv('GXEON_PAYAI_EDGE_URL', '');
     vi.stubEnv('PAYAI_API_KEY_ID', '');
     vi.stubEnv('PAYAI_API_KEY_SECRET', '');
     const { challenge } = generateTreasuryChallenge(TEST_OPERATOR_ADDRESS);
@@ -124,6 +137,7 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.mocked(getVercelOidcToken).mockReset();
   });
 
 
@@ -396,6 +410,34 @@ describe('GXEON-GLOBAL-MACHINE-REVENUE-001 Autonomous Machine-to-Machine Sales T
       expect((res.body as any).error).toBe('TREASURY_NOT_CONFIGURED');
     });
 
+
+    it('uses the Supabase PayAI bridge for status, verification and settlement with a scoped OIDC token', async () => {
+      vi.stubEnv('GXEON_PAYAI_EDGE_URL', payaiEdge);
+      vi.mocked(getVercelOidcToken).mockResolvedValue('test-vercel-oidc');
+      const { fetch } = mockSettlement({ edgeMode: 'merchant' });
+      expect(await getX402Readiness()).toMatchObject({
+        enabled: true, facilitatorAuthentication: 'merchant_configured', facilitatorCredentialSource: 'supabase',
+      });
+
+      const result = await handleX402CapabilityExecution(await paidRequest());
+
+      expect(result.statusCode).toBe(200);
+      const settlements = fetch.mock.calls.filter(([url]) => String(url).startsWith(payaiEdge + '?'));
+      expect(settlements.map(([url]) => new URL(String(url)).searchParams.get('operation'))).toEqual(['verify', 'settle']);
+      expect(fetch.mock.calls.some(([url]) => String(url).startsWith('https://facilitator.payai.network'))).toBe(false);
+      expect(vi.mocked(getVercelOidcToken).mock.calls.every(([options]) => options?.audience === payaiEdge)).toBe(true);
+    });
+
+    it('accepts the Supabase wallet mode and pauses if only part of a merchant key pair is configured', async () => {
+      vi.stubEnv('GXEON_PAYAI_EDGE_URL', payaiEdge);
+      vi.mocked(getVercelOidcToken).mockResolvedValue('test-vercel-oidc');
+      mockSettlement({ edgeMode: 'wallet' });
+      expect(await getX402Readiness()).toMatchObject({
+        enabled: true, facilitatorAuthentication: 'wallet', facilitatorCredentialSource: 'supabase',
+      });
+      mockSettlement({ edgeMode: 'misconfigured' });
+      expect(await getX402Readiness()).toMatchObject({ enabled: false, error: 'FACILITATOR_AUTH_NOT_CONFIGURED' });
+    });
 
     it('signs PayAI verification and settlement separately with the configured merchant key', async () => {
       const { privateKey, publicKey } = generateKeyPairSync('ed25519');
