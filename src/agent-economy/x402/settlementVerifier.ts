@@ -3,7 +3,7 @@ import { createPublicClient, http, isAddress, parseAbiItem, parseEventLogs, type
 import { base } from 'viem/chains';
 import { getAgentEconomyStore } from '../store.js';
 import { callPayAIFacilitator } from './payaiClient.js';
-import type { X402AcceptOption, X402PaymentPayload, X402SettlementVerification } from './types.js';
+import type { X402AcceptOption, X402PaymentPayload, X402SettlementRecord, X402SettlementVerification } from './types.js';
 
 const authorizationUsed = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)');
 const transfer = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
@@ -55,6 +55,7 @@ function sameAddress(value: unknown, expected: string) {
 
 type PaymentResult =
   | { kind: 'confirmed'; proof: X402SettlementVerification }
+  | { kind: 'delivered'; settlement: X402SettlementRecord }
   | { kind: 'invalid'; message: string }
   | { kind: 'pending' }
   | { kind: 'conflict' };
@@ -66,15 +67,25 @@ export async function verifyX402Settlement(
   const store = getAgentEconomyStore();
   const { authorization: auth } = payment.payload;
   const settlementId = createHash('sha256').update(auth.from + ':' + auth.nonce).digest('hex');
+  let intent = await store.getX402PaymentIntent(settlementId);
+  if (intent && intent.requestHash !== requestHash) return { kind: 'conflict' };
+  if (intent?.txHash) {
+    const settlement = await store.getX402Settlement(intent.txHash);
+    if (settlement?.settlementId === settlementId && settlement.state === 'DELIVERED') {
+      return { kind: 'delivered', settlement };
+    }
+  }
+
   const client = createPublicClient({
     chain: base,
     transport: http(process.env.BASE_RPC_URL || base.rpcUrls.default.http[0], { timeout: 4500, retryCount: 0 }),
   });
-
-  let intent = await store.getX402PaymentIntent(settlementId);
-  if (intent && intent.requestHash !== requestHash) return { kind: 'conflict' };
-
-  if (await client.getChainId() !== base.id) throw new Error('Base RPC returned an unexpected chain');
+  const chainId = await client.getChainId().catch((error: unknown) => {
+    if (!intent) throw error;
+    return null;
+  });
+  if (chainId === null) return { kind: 'pending' };
+  if (chainId !== base.id) throw new Error('Base RPC returned an unexpected chain');
   if (!intent) {
     const now = Math.floor(Date.now() / 1000);
     if (Number(auth.validBefore) <= now || Number(auth.validAfter) > now ||
@@ -115,7 +126,8 @@ export async function verifyX402Settlement(
     // An interrupted facilitator call may already have broadcast the transfer.
     // Locate that authorization's transaction, without asking the buyer to pay again.
     const firstBlock = BigInt(intent.firstBlock);
-    const tip = await client.getBlockNumber();
+    const tip = await client.getBlockNumber().catch(() => null);
+    if (tip === null || tip < firstBlock) return { kind: 'pending' };
     const searchEnd = firstBlock + 450n;
     const logs = await client.getLogs({
       address: asset,
@@ -124,7 +136,8 @@ export async function verifyX402Settlement(
       fromBlock: firstBlock,
       toBlock: tip < searchEnd ? tip : searchEnd,
       strict: true,
-    });
+    }).catch(() => null);
+    if (!logs) return { kind: 'pending' };
     txHash = logs.find(log => !log.removed)?.transactionHash ?? undefined;
     if (!txHash) {
       const expired = Number(auth.validBefore) + 45 < Date.now() / 1000;
@@ -152,10 +165,10 @@ export async function verifyX402Settlement(
     return { kind: 'invalid', message: 'The Base receipt does not prove this exact USDC payment.' };
   }
 
-  const finalized = await client.getBlock({ blockTag: 'finalized' });
-  if (finalized.number === null || finalized.number < receipt.blockNumber) return { kind: 'pending' };
-  const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
-  if (canonical.hash === null || canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+  const finalized = await client.getBlock({ blockTag: 'finalized' }).catch(() => null);
+  if (finalized?.number == null || finalized.number < receipt.blockNumber) return { kind: 'pending' };
+  const canonical = await client.getBlock({ blockNumber: receipt.blockNumber }).catch(() => null);
+  if (!canonical?.hash || canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
     return { kind: 'pending' };
   }
 

@@ -17,12 +17,21 @@ export interface X402AcceptOption {
   };
 }
 
+export interface X402Resource {
+  url: string;
+  description?: string;
+  mimeType?: string;
+  serviceName?: string;
+  tags?: string[];
+}
+
 export interface X402Challenge {
   x402Version: 2;
   status: 402;
   title: string;
   error: string;
-  resource: { url: string; description: string; mimeType: string };
+  resource: X402Resource;
+  extensions?: Record<string, unknown>;
   serviceId: string;
   accepts: X402AcceptOption[];
 }
@@ -38,11 +47,8 @@ export interface Eip3009Authorization {
 
 export interface X402PaymentPayload {
   x402Version: 2;
-  resource?: {
-    url: string;
-    description?: string;
-    mimeType?: string;
-  };
+  resource?: X402Resource;
+  extensions?: Record<string, unknown>;
   accepted: {
     scheme: 'exact';
     network: string;

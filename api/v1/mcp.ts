@@ -6,7 +6,8 @@ import { planAgentPurchase } from '../../src/agent-economy/marketPlanner.js';
 import { listAvailableServices } from '../../src/agent-economy/services/registry.js';
 import { fetchSpeedbotExternalOpportunities } from '../../src/agent-economy/connectors/speedbotConnector.js';
 import { getX402Readiness, X402_BASE_NETWORK } from '../../src/agent-economy/x402/readiness.js';
-import { X402_SERVICE_PATHS } from '../../src/agent-economy/x402/pricing.js';
+import { getX402Price, X402_SERVICE_PATHS } from '../../src/agent-economy/x402/pricing.js';
+import { describeX402Service } from '../../src/agent-economy/x402/discovery.js';
 import { sendJson, sendError, parseBody } from './_helper.js';
 import type { AgentScope } from '../../src/agent-economy/types.js';
 
@@ -261,7 +262,23 @@ async function handlePublicMarketMcp(req: any, res: any) {
         enabled: x402.enabled,
         paymentMethodsEndpoint: '/v1/payment-methods',
         offersEndpoint: '/v1/offers',
-        ...(x402.enabled ? { network: X402_BASE_NETWORK, gateways: X402_SERVICE_PATHS } : {}),
+        ...(x402.enabled ? {
+          network: X402_BASE_NETWORK,
+          gateways: X402_SERVICE_PATHS,
+          examples: Object.entries(X402_SERVICE_PATHS).flatMap(([serviceId, path]) => {
+            const declaration = describeX402Service(serviceId, A2A_ORIGIN + path);
+            return declaration ? [{
+              serviceId,
+              url: declaration.resource.url,
+              amountUsdc: getX402Price(serviceId).amountUsdc,
+              ...declaration.extensions.bazaar.info,
+            }] : [];
+          }),
+          pending: {
+            header: 'Retry-After',
+            instruction: 'Repeat the original POST with the same body and PAYMENT-SIGNATURE until finality.',
+          },
+        } : {}),
       },
       firstPurchase: [
         'POST /v1/billing/topup with {packId,name}.',

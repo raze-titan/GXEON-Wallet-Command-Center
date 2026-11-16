@@ -58,6 +58,7 @@ GET https://gxeon-wallet-command-center.vercel.app/v1/billing/topup
 | Capability | Price |
 | --- | --- |
 | JSON Validate | 2 credits per payload |
+| CSV Audit | 2 credits per file |
 | URL Verify | 5 credits per URL |
 | API Health | 10 credits per endpoint |
 
@@ -95,7 +96,11 @@ Production purchase/execution currently has two active BRL rails:
 
 The live x402 status is available at `GET /v1/payment-methods`. When enabled, the Base USDC pilot serves `POST /x402/json-validate` and `POST /x402/csv-audit` for 0.01 USDC per call, paid to the verified treasury. The receiving wallet stays non-custodial. PayAI verifies and submits the buyer's signed x402 payment, and GXEON checks the finalized Base transaction before it records delivery and revenue together.
 
-Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry the same input with the buyer's x402 v2 `PAYMENT-SIGNATURE` header. If the API reports `SETTLEMENT_PENDING`, follow `Retry-After` and reuse the same input and signature while the transaction finalizes. A successful response includes the result and the finalized Base transaction hash.
+Start with the normal task input and read the `PAYMENT-REQUIRED` header. Retry the same input with the buyer's x402 v2 `PAYMENT-SIGNATURE` header. If the API reports `SETTLEMENT_PENDING`, follow `Retry-After` and reuse the same input and signature while the transaction finalizes. A successful response includes the result, a `receipt` with `jobId`, `txHash`, and `resultHash`, and a `PAYMENT-RESPONSE` header. Repeating a delivered request with the original input and authorization returns the same receipt.
+
+The public buying guide and the x402 quote expose request and response examples for both routes. CSV Audit is a pre-import check for structural problems such as duplicate headers, inconsistent rows, and empty cells. Its report may return `qualityPass: false` while the paid execution itself succeeds. JSON Validate reports syntax or schema verification as `valid` and `errors`.
+
+PayAI Bazaar receives the service declaration with payment verification and settlement. Check each POST route separately after a qualifying settlement before treating that route as listed. Check Coinbase CDP discovery separately for the same endpoint, network, and payee.
 
 ### PayAI merchant account
 

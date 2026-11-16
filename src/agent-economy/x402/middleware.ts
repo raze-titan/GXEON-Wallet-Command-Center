@@ -5,9 +5,10 @@ import { executeJsonValidateWorker, type JsonValidateInput } from '../workers/js
 import { getNetwork } from './networks.js';
 import { getX402Price, X402_SERVICE_PATHS } from './pricing.js';
 import { createX402Receipt } from './receipt.js';
+import { describeX402Service } from './discovery.js';
 import { getX402Readiness, X402_BASE_NETWORK } from './readiness.js';
 import { getPaymentPayload, verifyX402Settlement } from './settlementVerifier.js';
-import type { X402AcceptOption, X402Challenge, X402Receipt, X402SettlementResponse } from './types.js';
+import type { X402AcceptOption, X402Challenge, X402Receipt, X402SettlementRecord, X402SettlementResponse } from './types.js';
 
 export interface X402HandlerResult {
   statusCode: number;
@@ -46,6 +47,25 @@ function deliveryResponse(receipt: X402Receipt, result: unknown) {
   });
 }
 
+function retryDelivery(error: string, message: string, retryAfter: string): X402HandlerResult {
+  return response(503, {
+    error,
+    message,
+    retry: { method: 'POST', reuseRequestBody: true, reusePaymentSignature: true },
+  }, { 'Retry-After': retryAfter });
+}
+
+async function replayDelivery(store: ReturnType<typeof getAgentEconomyStore>, settlement: X402SettlementRecord) {
+  const [receipt, jobResult] = await Promise.all([
+    settlement.receiptId ? store.getX402Receipt(settlement.receiptId) : null,
+    settlement.jobId ? store.getJobResult(settlement.jobId) : null,
+  ]);
+  if (!receipt || !jobResult || jobResult.results.length === 0) {
+    return retryDelivery('DELIVERY_UNAVAILABLE', 'Retry the original request.', '5');
+  }
+  return deliveryResponse(receipt, jobResult.results[0]);
+}
+
 export async function handleX402CapabilityExecution(options: {
   serviceId: string;
   input: unknown;
@@ -53,7 +73,8 @@ export async function handleX402CapabilityExecution(options: {
   resourceUrl: string;
 }): Promise<X402HandlerResult> {
   const { serviceId, input, headers, resourceUrl } = options;
-  if (!ACTIVE_SERVICES.includes(serviceId)) {
+  const discovery = ACTIVE_SERVICES.includes(serviceId) ? describeX402Service(serviceId, resourceUrl) : null;
+  if (!discovery) {
     return response(404, { error: 'UNSUPPORTED_CAPABILITY', message: 'This capability is unavailable over x402.' });
   }
 
@@ -82,7 +103,7 @@ export async function handleX402CapabilityExecution(options: {
       status: 402,
       title: 'Payment Required',
       error: signatureHeader ? 'PAYMENT_VERIFICATION_FAILED' : 'Payment signature required.',
-      resource: { url: resourceUrl, description: 'GXEON ' + serviceId, mimeType: 'application/json' },
+      ...discovery,
       serviceId,
       accepts: [requirements],
     };
@@ -115,10 +136,12 @@ export async function handleX402CapabilityExecution(options: {
   }
 
   const requestHash = createHash('sha256').update(JSON.stringify([serviceId, inputHash, payment])).digest('hex');
-  const paymentResult = await verifyX402Settlement(payment, requestHash);
+  // Discovery metadata can change after a payment intent has been reserved.
+  const paymentResult = await verifyX402Settlement({ ...payment, ...discovery }, requestHash);
   if (paymentResult.kind === 'pending') {
-    return response(503, { error: 'SETTLEMENT_PENDING', message: 'Wait for Base finality, then retry the same request and payment signature.' }, { 'Retry-After': '30' });
+    return retryDelivery('SETTLEMENT_PENDING', 'Wait for Base finality, then retry the same request and payment signature.', '30');
   }
+  if (paymentResult.kind === 'delivered') return replayDelivery(store, paymentResult.settlement);
   if (paymentResult.kind === 'conflict') {
     await store.recordSecurityEvent('replaysBlocked');
     return response(409, { error: 'PAYMENT_ALREADY_BOUND', message: 'The payment is bound to a different request.' });
@@ -167,12 +190,5 @@ export async function handleX402CapabilityExecution(options: {
     await store.recordSecurityEvent('replaysBlocked');
     return response(409, { error: 'SETTLEMENT_ALREADY_USED' });
   }
-  const [previousReceipt, previousResult] = await Promise.all([
-    store.getX402Receipt(stored.receiptId),
-    store.getJobResult(jobId),
-  ]);
-  if (!previousReceipt || !previousResult) {
-    return response(503, { error: 'DELIVERY_UNAVAILABLE', message: 'Retry the original request.' }, { 'Retry-After': '5' });
-  }
-  return deliveryResponse(previousReceipt, previousResult.results[0]);
+  return replayDelivery(store, stored);
 }

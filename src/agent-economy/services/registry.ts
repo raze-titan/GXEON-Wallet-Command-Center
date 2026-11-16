@@ -49,7 +49,7 @@ export const SERVICE_REGISTRY: Record<string, ServiceDefinition> = {
     version: '1.0.0',
     name: 'GXEON CSV Audit',
     description:
-      'Zero-network CSV quality audit for uneven rows, duplicate headers or records, blank rows, and empty cells.',
+      'Validate CSV before import. Find uneven rows, duplicate headers or records, blank rows, and empty cells without outbound network access.',
     inputSchema: {
       type: 'object',
       properties: {
